@@ -261,6 +261,14 @@ async function handleStart(phone) {
   };
   storage.setConversation(phone, newSession);
 
+  // Notify agent that someone started the chat
+  if (config.AGENT_PHONE) {
+    const now = new Date().toLocaleString('he-IL', { timeZone: 'Asia/Jerusalem' });
+    await wa.sendText(config.AGENT_PHONE,
+      `👁️ *התחלת שיחה חדשה*\n\n📱 מספר: +${phone}\n🕐 שעה: ${now}\n\n_אם לא תגיע הודעת ליד בהמשך – הלקוח לא השלים את התהליך._`
+    );
+  }
+
   await wa.sendText(phone,
     `היי! 👋 תודה שפנית אלינו למשרד עורך דין יהונתן פודים - השער שלך לרומניה.\n\nאני כאן כדי לבדוק עבורך *זכאות לדרכון רומני* וללוות אותך עד קביעת שיחת ייעוץ עם *עו״ד מהמשרד*.\n\nכדי להתחיל – מה גרם לך להתעניין?`
   );

@@ -19,10 +19,16 @@ async function sendText(to, text) {
       type: 'text',
       text: { body: text },
     }, { headers: headers() });
-    console.log(`✅ Sent text to ${to}`);
+    const msgId = res.data?.messages?.[0]?.id || 'no-id';
+    console.log(`✅ Sent text to ${to} | msg_id=${msgId}`);
     return res.data;
   } catch (err) {
-    console.error('❌ sendText error:', err.response?.data || err.message);
+    const errData = err.response?.data;
+    const code = errData?.error?.code;
+    const subcode = errData?.error?.error_subcode;
+    const detail = errData?.error?.error_data?.details || errData?.error?.message || err.message;
+    console.error(`❌ sendText error to ${to} | code=${code} subcode=${subcode} | ${detail}`);
+    console.error('   Full error:', JSON.stringify(errData || err.message));
   }
 }
 

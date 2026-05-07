@@ -9,8 +9,12 @@ module.exports = {
   // Server
   PORT: process.env.PORT || 3000,
 
-  // Human agent phone (your number - gets notified when handoff is needed)
+  // Agent phones — supports comma-separated list for multiple recipients
+  // e.g. AGENT_PHONE=972547787804,972501234567
   AGENT_PHONE: process.env.AGENT_PHONE,
+  AGENT_PHONES: process.env.AGENT_PHONE
+    ? process.env.AGENT_PHONE.split(',').map(p => p.trim()).filter(Boolean)
+    : [],
 
   // Business info
   BUSINESS_NAME: process.env.BUSINESS_NAME || 'שירות דרכון רומני',

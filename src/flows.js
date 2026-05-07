@@ -32,6 +32,12 @@ const storage = require('./storage');
 const config = require('./config');
 const { addDays, format, getDay } = require('date-fns');
 
+// ─── Notify all configured agent phones ──────────────────────────────────────
+async function notifyAgents(text) {
+  if (!config.AGENT_PHONES.length) return;
+  await Promise.all(config.AGENT_PHONES.map(phone => wa.sendText(phone, text)));
+}
+
 // ─── Trigger phrases (Click-to-WhatsApp from Facebook ads) ──────────────────
 
 const TRIGGER_PHRASES = [
@@ -240,14 +246,19 @@ async function repromptCurrentState(phone, session) {
 }
 
 async function showInterestButtons(phone) {
-  await wa.sendButtons(
+  await wa.sendList(
     phone,
     'במה תרצה שנתחיל?',
-    [
-      { id: 'interest_eligibility', title: '✅ בדיקת זכאות' },
-      { id: 'interest_process',     title: '📋 מידע על התהליך' },
-      { id: 'interest_cost',        title: '💰 עלויות וזמנים' },
-    ]
+    'בחר נושא',
+    [{
+      title: 'נושאים',
+      rows: [
+        { id: 'interest_eligibility',     title: '✅ בדיקת זכאות',        description: 'בדוק אם אתה זכאי לדרכון רומני' },
+        { id: 'interest_process',         title: '📋 מידע על התהליך',      description: 'שלבי תהליך קבלת האזרחות' },
+        { id: 'interest_cost',            title: '💰 עלויות וזמנים',       description: 'עלות צפויה וכמה זמן לוקח' },
+        { id: 'interest_romanian_course', title: '🎓 קורס רומנית B1',      description: 'תעודת שפה – תנאי לשחזור אזרחות' },
+      ],
+    }]
   );
 }
 
@@ -262,9 +273,9 @@ async function handleStart(phone) {
   storage.setConversation(phone, newSession);
 
   // Notify agent that someone started the chat
-  if (config.AGENT_PHONE) {
+  if (config.AGENT_PHONES.length) {
     const now = new Date().toLocaleString('he-IL', { timeZone: 'Asia/Jerusalem' });
-    await wa.sendText(config.AGENT_PHONE,
+    await notifyAgents(
       `👁️ *התחלת שיחה חדשה*\n\n📱 מספר: +${phone}\n🕐 שעה: ${now}\n\n_אם לא תגיע הודעת ליד בהמשך – הלקוח לא השלים את התהליך._`
     );
   }
@@ -302,6 +313,16 @@ async function handleInterestCost(phone, session) {
 
   await wa.sendText(phone,
     `כדי לתת תשובה אמינה ולא "בערך" – צריך להבין את *מורכבות התיק*.\n\nהזמנים והעלויות מושפעים מ-3 גורמים עיקריים:\n• האם יש מסמכים זמינים\n• *שנת הלידה* של בן המשפחה הרומני\n• *האזור* שבו נולד (חלק מהאזורים היו רומניים רק בתקופות מסוימות)\n\nבממוצע, תהליך מלא נע *בין שנה לשנתיים*, אבל יש תיקים מהירים יותר.\n\nרוצה שאעריך את הזמן והעלות במקרה שלך? מי במשפחה נולד ברומניה ומה שנת הלידה שלו?`
+  );
+}
+
+async function handleInterestRomanianCourse(phone, session) {
+  session.state = 'LEAD_NAME';
+  session.data.source = 'romanian_course';
+  storage.setConversation(phone, session);
+
+  await wa.sendText(phone,
+    `🎓 *קורס רומנית לתעודת B1*\n\nבמסגרת שיתוף הפעולה שלנו עם משרד עורכי דין מוביל ברומניה, אנו שמחים לבשר על הזדמנות ייחודית ללקוחות המשרד:\n\n*קורס רומנית רשמי ומוכר לקבלת תעודת שפה ברמת B1* — תנאי הכרחי בתהליך השבת האזרחות הרומנית, בהתאם לשינויי החקיקה.\n\n📍 הקורס מתקיים באוניברסיטת *סיביו לוציאן בלאגה*\n✅ עומד בדרישות *חוק 21/1991*\n📋 רישום המשתתפים מתבצע ישירות דרך משרדנו\n\n*תשאירו פרטים ונציג יחזור אליכם בהקדם.* 😊\n\nמה *שמך המלא*?`
   );
 }
 
@@ -416,13 +437,15 @@ async function handleLeadPhone(phone, text, session) {
   session.state = 'COMPLETE';
   storage.setConversation(phone, session);
 
-  const { name, familyMember, birthYear, city, leftYear, partialInfo, eligibility } = session.data;
+  const { name, familyMember, birthYear, city, leftYear, partialInfo, eligibility, source } = session.data;
+  const isCourse = source === 'romanian_course';
 
   // Save lead
   storage.saveLead({
     waPhone: phone,
     name,
     clientPhone: cleaned,
+    source: source || 'passport',
     familyMember: familyMember || partialInfo,
     birthYear,
     city,
@@ -431,28 +454,42 @@ async function handleLeadPhone(phone, text, session) {
   });
 
   // Confirm to user
-  await wa.sendText(phone,
-    `🎉 *מצוין, ${name}!*\n\nקיבלנו את הפרטים שלך. *עו״ד מהמשרד יחזור אליך בהקדם* לתיאום שיחת הייעוץ.\n\nשיחת הייעוץ כוללת:\n📋 הערכת סיכוי ראשונית\n📋 הסבר על השלבים הרלוונטיים לך\n📋 טווחי זמן ועלויות ריאליים\n\n*ללא התחייבות* – פשוט מבינים יחד מה המצב. 😊\n\nתודה שפנית אלינו!\n\n─────────────────\nרוצה מידע נוסף בנושא אחר? בחר מהאפשרויות:`
-  );
+  if (isCourse) {
+    await wa.sendText(phone,
+      `🎉 *תודה, ${name}!*\n\nקיבלנו את הפרטים שלך לגבי *קורס הרומנית B1*.\n*נציג מהמשרד יחזור אליך בהקדם* עם כל הפרטים.\n\nתודה שפנית אלינו! 😊\n\n─────────────────\nרוצה מידע נוסף בנושא אחר? בחר מהאפשרויות:`
+    );
+  } else {
+    await wa.sendText(phone,
+      `🎉 *מצוין, ${name}!*\n\nקיבלנו את הפרטים שלך. *עו״ד מהמשרד יחזור אליך בהקדם* לתיאום שיחת הייעוץ.\n\nשיחת הייעוץ כוללת:\n📋 הערכת סיכוי ראשונית\n📋 הסבר על השלבים הרלוונטיים לך\n📋 טווחי זמן ועלויות ריאליים\n\n*ללא התחייבות* – פשוט מבינים יחד מה המצב. 😊\n\nתודה שפנית אלינו!\n\n─────────────────\nרוצה מידע נוסף בנושא אחר? בחר מהאפשרויות:`
+    );
+  }
   await new Promise(r => setTimeout(r, 500));
   await showInterestButtons(phone);
 
-  // Alert the human agent with full lead summary
-  if (config.AGENT_PHONE) {
-    const summary = [
-      `🔔 *ליד חדש – דרכון רומני*`,
-      ``,
-      `👤 שם: ${name}`,
-      `📞 טלפון: ${cleaned}`,
-      `📱 וואטסאפ: ${phone}`,
-      familyMember ? `👴 בן משפחה: ${familyMember}` : '',
-      birthYear   ? `📅 שנת לידה: ${birthYear}` : '',
-      city        ? `📍 עיר/מחוז: ${city}` : '',
-      leftYear    ? `🛫 עזב רומניה: ${leftYear}` : '',
-      partialInfo ? `📝 מידע חלקי: ${partialInfo}` : '',
-    ].filter(Boolean).join('\n');
+  // Alert the human agent(s) with full lead summary
+  if (config.AGENT_PHONES.length) {
+    const summary = isCourse
+      ? [
+          `🎓 *ליד חדש – קורס רומנית B1*`,
+          ``,
+          `👤 שם: ${name}`,
+          `📞 טלפון: ${cleaned}`,
+          `📱 וואטסאפ: ${phone}`,
+        ].join('\n')
+      : [
+          `🔔 *ליד חדש – דרכון רומני*`,
+          ``,
+          `👤 שם: ${name}`,
+          `📞 טלפון: ${cleaned}`,
+          `📱 וואטסאפ: ${phone}`,
+          familyMember ? `👴 בן משפחה: ${familyMember}` : '',
+          birthYear   ? `📅 שנת לידה: ${birthYear}` : '',
+          city        ? `📍 עיר/מחוז: ${city}` : '',
+          leftYear    ? `🛫 עזב רומניה: ${leftYear}` : '',
+          partialInfo ? `📝 מידע חלקי: ${partialInfo}` : '',
+        ].filter(Boolean).join('\n');
 
-    await wa.sendText(config.AGENT_PHONE, summary);
+    await notifyAgents(summary);
   }
 }
 
@@ -466,9 +503,9 @@ async function handleHandoff(phone, session) {
     `👤 *בוודאי.* מעביר את הפרטים שלך לנציג מהמשרד.\n\nנציג יחזור אליך *בהקדם האפשרי*.\nשעות פעילות: *א׳–ה׳, 09:00–18:00*`
   );
 
-  if (config.AGENT_PHONE) {
+  if (config.AGENT_PHONES.length) {
     const { name, clientPhone } = session.data;
-    await wa.sendText(config.AGENT_PHONE,
+    await notifyAgents(
       `🆘 *לקוח מבקש נציג אנושי*\n\n👤 שם: ${name || 'לא נאסף עדיין'}\n📱 וואטסאפ: ${phone}${clientPhone ? `\n📞 טלפון: ${clientPhone}` : ''}\n\n👉 אנא צור קשר בהקדם.`
     );
   }
@@ -569,6 +606,8 @@ async function handleMessage(phone, message) {
         await handleInterestProcess(phone, session);
       } else if (buttonId === 'interest_cost') {
         await handleInterestCost(phone, session);
+      } else if (buttonId === 'interest_romanian_course') {
+        await handleInterestRomanianCourse(phone, session);
       } else {
         // Free text at welcome – detect or re-show buttons
         const inlineKey = detectInlineQuestion(text);
@@ -621,6 +660,8 @@ async function handleMessage(phone, message) {
         await handleInterestProcess(phone, session);
       } else if (buttonId === 'interest_cost') {
         await handleInterestCost(phone, session);
+      } else if (buttonId === 'interest_romanian_course') {
+        await handleInterestRomanianCourse(phone, session);
       } else {
         // Free text after completion
         const inlineKey = detectInlineQuestion(text);

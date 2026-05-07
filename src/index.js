@@ -3,7 +3,13 @@ const express = require('express');
 const cron = require('node-cron');
 const config = require('./config');
 const { handleMessage } = require('./flows');
-const { markRead, sendText } = require('./whatsapp');
+const { markRead, sendText: waSendText } = require('./whatsapp');
+
+// Send to all configured agent phones at once
+async function notifyAgents(text) {
+  if (!config.AGENT_PHONES.length) return;
+  await Promise.all(config.AGENT_PHONES.map(phone => waSendText(phone, text)));
+}
 const storage = require('./storage');
 
 const app = express();
@@ -92,7 +98,7 @@ app.get('/health', (req, res) => {
 // Sends a morning status message every day at 08:00 Israel time.
 // This keeps the 24-hour WhatsApp messaging window permanently open
 // so that lead notifications and chat-start alerts are always delivered.
-if (config.AGENT_PHONE) {
+if (config.AGENT_PHONES.length) {
   // Run every day at 08:00 Israel time (UTC+3, so 05:00 UTC)
   cron.schedule('0 5 * * *', async () => {
     try {
@@ -101,16 +107,16 @@ if (config.AGENT_PHONE) {
       const todayStr = new Date().toISOString().slice(0, 10);
       const todayLeads = leads.filter(l => (l.timestamp || '').startsWith(todayStr));
 
-      await sendText(config.AGENT_PHONE,
+      await notifyAgents(
         `🌅 *בוקר טוב! הבוט פעיל ועובד* ✅\n\n📅 ${today}\n📊 סה"כ לידים עד כה: *${leads.length}*${todayLeads.length > 0 ? `\n🔥 לידים מאתמול: *${todayLeads.length}*` : ''}\n\n_הבוט מקבל פניות 24/7 ושולח התראות אוטומטיות._`
       );
-      console.log('✅ Daily status sent to agent');
+      console.log('✅ Daily status sent to agents');
     } catch (err) {
       console.error('❌ Daily status cron error:', err.message);
     }
   }, { timezone: 'UTC' });
 
-  console.log('⏰ Daily status cron scheduled (08:00 Israel time)');
+  console.log(`⏰ Daily status cron scheduled → ${config.AGENT_PHONES.join(', ')}`);
 }
 
 // ─── Start server ─────────────────────────────────────────────────────────────
@@ -119,13 +125,13 @@ app.listen(config.PORT, async () => {
   console.log(`📡 Webhook URL: http://localhost:${config.PORT}/webhook`);
   console.log(`📊 Admin: http://localhost:${config.PORT}/admin/leads\n`);
 
-  // Send startup notification to agent (also opens the 24-hour window immediately)
-  if (config.AGENT_PHONE) {
+  // Send startup notification to all agents (also opens the 24-hour window immediately)
+  if (config.AGENT_PHONES.length) {
     try {
-      await sendText(config.AGENT_PHONE,
-        `🤖 *הבוט הופעל מחדש ופעיל* ✅\n\n🕐 ${new Date().toLocaleString('he-IL', { timeZone: 'Asia/Jerusalem' })}\n\n_תקבל התראות על שיחות חדשות ולידים._`
+      await notifyAgents(
+        `🤖 *הבוט הופעל מחדש ופעיל* ✅\n\n🕐 ${new Date().toLocaleString('he-IL', { timeZone: 'Asia/Jerusalem' })}\n\n_תקבלו התראות על שיחות חדשות ולידים._`
       );
-      console.log('✅ Startup notification sent to agent');
+      console.log(`✅ Startup notification sent to: ${config.AGENT_PHONES.join(', ')}`);
     } catch (err) {
       console.error('❌ Startup notification error:', err.message);
     }

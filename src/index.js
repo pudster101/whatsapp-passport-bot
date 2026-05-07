@@ -12,8 +12,12 @@ async function notifyAgents(text) {
 }
 const storage = require('./storage');
 
+const path = require('path');
 const app = express();
 app.use(express.json());
+
+// Serve static files (images, etc.) from the /public folder
+app.use('/public', express.static(path.join(__dirname, '..', 'public')));
 
 // ─── Webhook Verification (GET) ──────────────────────────────────────────────
 // Meta sends this once when you register the webhook in the dashboard

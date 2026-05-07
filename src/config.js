@@ -16,6 +16,9 @@ module.exports = {
     ? process.env.AGENT_PHONE.split(',').map(p => p.trim()).filter(Boolean)
     : [],
 
+  // Public URL of this Railway deployment (for media links)
+  PUBLIC_URL: process.env.PUBLIC_URL || 'https://whatsapp-passport-bot-production.up.railway.app',
+
   // Business info
   BUSINESS_NAME: process.env.BUSINESS_NAME || 'שירות דרכון רומני',
 

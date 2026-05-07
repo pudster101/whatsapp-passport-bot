@@ -90,6 +90,30 @@ async function sendList(to, bodyText, buttonLabel, sections) {
 }
 
 /**
+ * Send an image message (by public URL)
+ */
+async function sendImage(to, imageUrl, caption = '') {
+  try {
+    const payload = {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'image',
+      image: { link: imageUrl },
+    };
+    if (caption) payload.image.caption = caption;
+    const res = await axios.post(BASE_URL, payload, { headers: headers() });
+    const msgId = res.data?.messages?.[0]?.id || 'no-id';
+    console.log(`✅ Sent image to ${to} | msg_id=${msgId}`);
+    return res.data;
+  } catch (err) {
+    const errData = err.response?.data;
+    const detail = errData?.error?.message || err.message;
+    console.error(`❌ sendImage error to ${to}: ${detail}`);
+    console.error('   Full error:', JSON.stringify(errData || err.message));
+  }
+}
+
+/**
  * Mark a message as read
  */
 async function markRead(messageId) {
@@ -104,4 +128,4 @@ async function markRead(messageId) {
   }
 }
 
-module.exports = { sendText, sendButtons, sendList, markRead };
+module.exports = { sendText, sendButtons, sendList, sendImage, markRead };

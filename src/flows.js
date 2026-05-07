@@ -321,10 +321,12 @@ async function handleInterestRomanianCourse(phone, session) {
   session.data.source = 'romanian_course';
   storage.setConversation(phone, session);
 
-  // Send the course flyer image first (if available)
-  const flyerUrl = `${config.PUBLIC_URL}/public/course-flyer.jpg`;
-  await wa.sendImage(phone, flyerUrl);
-  await new Promise(r => setTimeout(r, 500));
+  // Send the course flyer image first (if the file has been deployed)
+  if (typeof wa.sendImage === 'function') {
+    const flyerUrl = `${config.PUBLIC_URL}/public/course-flyer.jpg`;
+    await wa.sendImage(phone, flyerUrl).catch(e => console.warn('⚠️ Flyer image not sent:', e.message));
+    await new Promise(r => setTimeout(r, 500));
+  }
 
   await wa.sendText(phone,
     `🎓 *קורס רומנית לתעודת B1*\n\nבמסגרת שיתוף הפעולה שלנו עם משרד עורכי דין מוביל ברומניה, אנו שמחים לבשר על הזדמנות ייחודית ללקוחות המשרד:\n\n*קורס רומנית רשמי ומוכר לקבלת תעודת שפה ברמת B1* — תנאי הכרחי בתהליך השבת האזרחות הרומנית, בהתאם לשינויי החקיקה.\n\n📍 הקורס מתקיים באוניברסיטת *סיביו לוציאן בלאגה*\n✅ עומד בדרישות *חוק 21/1991*\n📋 רישום המשתתפים מתבצע ישירות דרך משרדנו\n\n*תשאירו פרטים ונציג יחזור אליכם בהקדם.* 😊\n\nמה *שמך המלא*?`

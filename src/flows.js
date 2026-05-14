@@ -33,9 +33,16 @@ const config = require('./config');
 const { addDays, format, getDay } = require('date-fns');
 
 // ─── Notify all configured agent phones ──────────────────────────────────────
-async function notifyAgents(text) {
+// Tries approved template first (works 24/7), falls back to free text.
+async function notifyAgents(text, templateName = null, params = []) {
   if (!config.AGENT_PHONES.length) return;
-  await Promise.all(config.AGENT_PHONES.map(phone => wa.sendText(phone, text)));
+  await Promise.all(config.AGENT_PHONES.map(async (phone) => {
+    if (templateName) {
+      const sent = await wa.sendTemplate(phone, templateName, params);
+      if (sent) return;
+    }
+    await wa.sendText(phone, text);
+  }));
 }
 
 // ─── Trigger phrases (Click-to-WhatsApp from Facebook ads) ──────────────────
@@ -276,7 +283,9 @@ async function handleStart(phone) {
   if (config.AGENT_PHONES.length) {
     const now = new Date().toLocaleString('he-IL', { timeZone: 'Asia/Jerusalem' });
     await notifyAgents(
-      `👁️ *התחלת שיחה חדשה*\n\n📱 מספר: +${phone}\n🕐 שעה: ${now}\n\n_אם לא תגיע הודעת ליד בהמשך – הלקוח לא השלים את התהליך._`
+      `👁️ *התחלת שיחה חדשה*\n\n📱 מספר: +${phone}\n🕐 שעה: ${now}\n\n_אם לא תגיע הודעת ליד בהמשך – הלקוח לא השלים את התהליך._`,
+      'pudim_chat_start',
+      [phone, now]
     );
   }
 
@@ -475,28 +484,28 @@ async function handleLeadPhone(phone, text, session) {
 
   // Alert the human agent(s) with full lead summary
   if (config.AGENT_PHONES.length) {
-    const summary = isCourse
-      ? [
-          `🎓 *ליד חדש – קורס רומנית B1*`,
-          ``,
-          `👤 שם: ${name}`,
-          `📞 טלפון: ${cleaned}`,
-          `📱 וואטסאפ: ${phone}`,
-        ].join('\n')
-      : [
-          `🔔 *ליד חדש – דרכון רומני*`,
-          ``,
-          `👤 שם: ${name}`,
-          `📞 טלפון: ${cleaned}`,
-          `📱 וואטסאפ: ${phone}`,
-          familyMember ? `👴 בן משפחה: ${familyMember}` : '',
-          birthYear   ? `📅 שנת לידה: ${birthYear}` : '',
-          city        ? `📍 עיר/מחוז: ${city}` : '',
-          leftYear    ? `🛫 עזב רומניה: ${leftYear}` : '',
-          partialInfo ? `📝 מידע חלקי: ${partialInfo}` : '',
-        ].filter(Boolean).join('\n');
-
-    await notifyAgents(summary);
+    if (isCourse) {
+      await notifyAgents(
+        `🎓 *ליד חדש – קורס רומנית B1*\n\n👤 שם: ${name}\n📞 טלפון: ${cleaned}\n📱 וואטסאפ: ${phone}`,
+        'b1_lead_new',
+        [name, cleaned, phone]
+      );
+    } else {
+      const fallbackText = [
+        `🔔 *ליד חדש – דרכון רומני*`, ``,
+        `👤 שם: ${name}`, `📞 טלפון: ${cleaned}`, `📱 וואטסאפ: ${phone}`,
+        familyMember ? `👴 בן משפחה: ${familyMember}` : '',
+        birthYear    ? `📅 שנת לידה: ${birthYear}` : '',
+        city         ? `📍 עיר/מחוז: ${city}` : '',
+        leftYear     ? `🛫 עזב רומניה: ${leftYear}` : '',
+        partialInfo  ? `📝 מידע חלקי: ${partialInfo}` : '',
+      ].filter(Boolean).join('\n');
+      await notifyAgents(
+        fallbackText,
+        'passport_lead_new',
+        [name, cleaned, phone, familyMember || '—', birthYear || '—', city || '—']
+      );
+    }
   }
 }
 
@@ -513,7 +522,9 @@ async function handleHandoff(phone, session) {
   if (config.AGENT_PHONES.length) {
     const { name, clientPhone } = session.data;
     await notifyAgents(
-      `🆘 *לקוח מבקש נציג אנושי*\n\n👤 שם: ${name || 'לא נאסף עדיין'}\n📱 וואטסאפ: ${phone}${clientPhone ? `\n📞 טלפון: ${clientPhone}` : ''}\n\n👉 אנא צור קשר בהקדם.`
+      `🆘 *לקוח מבקש נציג אנושי*\n\n👤 שם: ${name || 'לא נאסף עדיין'}\n📱 וואטסאפ: ${phone}${clientPhone ? `\n📞 טלפון: ${clientPhone}` : ''}\n\n👉 אנא צור קשר בהקדם.`,
+      'pudim_handoff',
+      [name || 'לא נאסף', phone, clientPhone || '—']
     );
   }
 }

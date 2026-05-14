@@ -19,6 +19,11 @@ module.exports = {
   // Public URL of this Railway deployment (for media links)
   PUBLIC_URL: process.env.PUBLIC_URL || 'https://whatsapp-passport-bot-production.up.railway.app',
 
+  // Email notifications (Gmail SMTP)
+  GMAIL_USER: process.env.GMAIL_USER || '',
+  GMAIL_APP_PASSWORD: process.env.GMAIL_APP_PASSWORD || '',
+  NOTIFY_EMAIL: process.env.NOTIFY_EMAIL || process.env.GMAIL_USER || '',
+
   // Business info
   BUSINESS_NAME: process.env.BUSINESS_NAME || 'שירות דרכון רומני',
 

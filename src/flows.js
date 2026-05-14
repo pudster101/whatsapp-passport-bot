@@ -30,6 +30,7 @@
 const wa = require('./whatsapp');
 const storage = require('./storage');
 const config = require('./config');
+const email = require('./email');
 const { addDays, format, getDay } = require('date-fns');
 
 // ─── Notify all configured agent phones ──────────────────────────────────────
@@ -287,6 +288,10 @@ async function handleStart(phone) {
       'pudim_chat_start',
       [phone, now]
     );
+    await email.sendNotification(
+      `📱 שיחה חדשה התחילה — +${phone}`,
+      `שיחה חדשה החלה בבוט.\n\nמספר: +${phone}\nשעה: ${now}\n\nאם לא תגיע הודעת ליד בהמשך – הלקוח לא השלים את התהליך.`
+    );
   }
 
   await wa.sendText(phone,
@@ -490,6 +495,10 @@ async function handleLeadPhone(phone, text, session) {
         'b1_lead_new',
         [name, cleaned, phone]
       );
+      await email.sendNotification(
+        `🎓 ליד חדש – קורס רומנית B1 — ${name}`,
+        `ליד חדש – קורס רומנית B1\n\nשם: ${name}\nטלפון: ${cleaned}\nוואטסאפ: +${phone}`
+      );
     } else {
       const fallbackText = [
         `🔔 *ליד חדש – דרכון רומני*`, ``,
@@ -504,6 +513,21 @@ async function handleLeadPhone(phone, text, session) {
         fallbackText,
         'passport_lead_new',
         [name, cleaned, phone, familyMember || '—', birthYear || '—', city || '—']
+      );
+      await email.sendNotification(
+        `🔔 ליד חדש – דרכון רומני — ${name}`,
+        [
+          `ליד חדש – דרכון רומני`,
+          ``,
+          `שם: ${name}`,
+          `טלפון: ${cleaned}`,
+          `וואטסאפ: +${phone}`,
+          familyMember ? `בן משפחה: ${familyMember}` : '',
+          birthYear    ? `שנת לידה: ${birthYear}` : '',
+          city         ? `עיר/מחוז: ${city}` : '',
+          leftYear     ? `עזב רומניה: ${leftYear}` : '',
+          partialInfo  ? `מידע חלקי: ${partialInfo}` : '',
+        ].filter(Boolean).join('\n')
       );
     }
   }
@@ -525,6 +549,10 @@ async function handleHandoff(phone, session) {
       `🆘 *לקוח מבקש נציג אנושי*\n\n👤 שם: ${name || 'לא נאסף עדיין'}\n📱 וואטסאפ: ${phone}${clientPhone ? `\n📞 טלפון: ${clientPhone}` : ''}\n\n👉 אנא צור קשר בהקדם.`,
       'pudim_handoff',
       [name || 'לא נאסף', phone, clientPhone || '—']
+    );
+    await email.sendNotification(
+      `🆘 לקוח מבקש נציג — ${name || phone}`,
+      `לקוח מבקש נציג אנושי.\n\nשם: ${name || 'לא נאסף'}\nוואטסאפ: +${phone}${clientPhone ? `\nטלפון: ${clientPhone}` : ''}\n\nאנא צור קשר בהקדם.`
     );
   }
 }

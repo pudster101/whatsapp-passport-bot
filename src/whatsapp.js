@@ -114,6 +114,42 @@ async function sendImage(to, imageUrl, caption = '') {
 }
 
 /**
+ * Send a pre-approved WhatsApp template message.
+ * Works 24/7 with no session window restriction.
+ * @param {string} to - recipient phone
+ * @param {string} templateName - e.g. 'pudim_lead_passport'
+ * @param {string[]} params - array of variable values for {{1}}, {{2}}, ...
+ * @returns {boolean} true if sent successfully
+ */
+async function sendTemplate(to, templateName, params = []) {
+  const components = params.length > 0 ? [{
+    type: 'body',
+    parameters: params.map(p => ({ type: 'text', text: String(p || '—') })),
+  }] : [];
+
+  try {
+    const res = await axios.post(BASE_URL, {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'template',
+      template: {
+        name: templateName,
+        language: { code: 'he' },
+        components,
+      },
+    }, { headers: headers() });
+    const msgId = res.data?.messages?.[0]?.id || 'no-id';
+    console.log(`✅ Sent template "${templateName}" to ${to} | msg_id=${msgId}`);
+    return true;
+  } catch (err) {
+    const errData = err.response?.data;
+    const detail = errData?.error?.message || err.message;
+    console.error(`❌ Template "${templateName}" to ${to} failed: ${detail}`);
+    return false;
+  }
+}
+
+/**
  * Mark a message as read
  */
 async function markRead(messageId) {
@@ -128,4 +164,4 @@ async function markRead(messageId) {
   }
 }
 
-module.exports = { sendText, sendButtons, sendList, sendImage, markRead };
+module.exports = { sendText, sendButtons, sendList, sendImage, sendTemplate, markRead };

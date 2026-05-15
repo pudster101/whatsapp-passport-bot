@@ -38,11 +38,21 @@ const { addDays, format, getDay } = require('date-fns');
 async function notifyAgents(text, templateName = null, params = []) {
   if (!config.AGENT_PHONES.length) return;
   await Promise.all(config.AGENT_PHONES.map(async (phone) => {
-    if (templateName) {
-      const sent = await wa.sendTemplate(phone, templateName, params);
-      if (sent) return;
+    let sent = false;
+    if (templateName && typeof wa.sendTemplate === 'function') {
+      try {
+        sent = await wa.sendTemplate(phone, templateName, params);
+      } catch (e) {
+        console.warn(`⚠️ Template send failed for ${phone}:`, e.message);
+      }
     }
-    await wa.sendText(phone, text);
+    if (!sent) {
+      try {
+        await wa.sendText(phone, text);
+      } catch (e) {
+        console.warn(`⚠️ Text send failed for ${phone}:`, e.message);
+      }
+    }
   }));
 }
 

@@ -30,7 +30,6 @@
 const wa = require('./whatsapp');
 const storage = require('./storage');
 const config = require('./config');
-const email = require('./email');
 const { addDays, format, getDay } = require('date-fns');
 
 // ─── Notify all configured agent phones ──────────────────────────────────────
@@ -290,25 +289,22 @@ async function handleStart(phone) {
   };
   storage.setConversation(phone, newSession);
 
-  // Notify agent that someone started the chat
-  if (config.AGENT_PHONES.length) {
-    const now = new Date().toLocaleString('he-IL', { timeZone: 'Asia/Jerusalem' });
-    await notifyAgents(
-      `👁️ *התחלת שיחה חדשה*\n\n📱 מספר: +${phone}\n🕐 שעה: ${now}\n\n_אם לא תגיע הודעת ליד בהמשך – הלקוח לא השלים את התהליך._`,
-      'pudim_chat_start',
-      [phone, now]
-    );
-    await email.sendNotification(
-      `📱 שיחה חדשה התחילה — +${phone}`,
-      `שיחה חדשה החלה בבוט.\n\nמספר: +${phone}\nשעה: ${now}\n\nאם לא תגיע הודעת ליד בהמשך – הלקוח לא השלים את התהליך.`
-    );
-  }
-
+  // Send welcome to customer immediately — don't wait for agent notifications
   await wa.sendText(phone,
     `היי! 👋 תודה שפנית אלינו למשרד עורך דין יהונתן פודים - השער שלך לרומניה.\n\nאני כאן כדי לבדוק עבורך *זכאות לדרכון רומני* וללוות אותך עד קביעת שיחת ייעוץ עם *עו״ד מהמשרד*.\n\nכדי להתחיל – מה גרם לך להתעניין?`
   );
   await new Promise(r => setTimeout(r, 400));
   await showInterestButtons(phone);
+
+  // Notify agent in background (fire-and-forget — never blocks customer)
+  if (config.AGENT_PHONES.length) {
+    const now = new Date().toLocaleString('he-IL', { timeZone: 'Asia/Jerusalem' });
+    notifyAgents(
+      `👁️ *התחלת שיחה חדשה*\n\n📱 מספר: +${phone}\n🕐 שעה: ${now}\n\n_אם לא תגיע הודעת ליד בהמשך – הלקוח לא השלים את התהליך._`,
+      'pudim_chat_start',
+      [phone, now]
+    ).catch(e => console.warn('⚠️ Agent chat-start notify failed:', e.message));
+  }
 }
 
 // ── Interest selection ────────────────────────────────────────────────────────
@@ -505,10 +501,6 @@ async function handleLeadPhone(phone, text, session) {
         'b1_lead_new',
         [name, cleaned, phone]
       );
-      await email.sendNotification(
-        `🎓 ליד חדש – קורס רומנית B1 — ${name}`,
-        `ליד חדש – קורס רומנית B1\n\nשם: ${name}\nטלפון: ${cleaned}\nוואטסאפ: +${phone}`
-      );
     } else {
       const fallbackText = [
         `🔔 *ליד חדש – דרכון רומני*`, ``,
@@ -523,21 +515,6 @@ async function handleLeadPhone(phone, text, session) {
         fallbackText,
         'passport_lead_new',
         [name, cleaned, phone, familyMember || '—', birthYear || '—', city || '—']
-      );
-      await email.sendNotification(
-        `🔔 ליד חדש – דרכון רומני — ${name}`,
-        [
-          `ליד חדש – דרכון רומני`,
-          ``,
-          `שם: ${name}`,
-          `טלפון: ${cleaned}`,
-          `וואטסאפ: +${phone}`,
-          familyMember ? `בן משפחה: ${familyMember}` : '',
-          birthYear    ? `שנת לידה: ${birthYear}` : '',
-          city         ? `עיר/מחוז: ${city}` : '',
-          leftYear     ? `עזב רומניה: ${leftYear}` : '',
-          partialInfo  ? `מידע חלקי: ${partialInfo}` : '',
-        ].filter(Boolean).join('\n')
       );
     }
   }
@@ -559,10 +536,6 @@ async function handleHandoff(phone, session) {
       `🆘 *לקוח מבקש נציג אנושי*\n\n👤 שם: ${name || 'לא נאסף עדיין'}\n📱 וואטסאפ: ${phone}${clientPhone ? `\n📞 טלפון: ${clientPhone}` : ''}\n\n👉 אנא צור קשר בהקדם.`,
       'pudim_handoff',
       [name || 'לא נאסף', phone, clientPhone || '—']
-    );
-    await email.sendNotification(
-      `🆘 לקוח מבקש נציג — ${name || phone}`,
-      `לקוח מבקש נציג אנושי.\n\nשם: ${name || 'לא נאסף'}\nוואטסאפ: +${phone}${clientPhone ? `\nטלפון: ${clientPhone}` : ''}\n\nאנא צור קשר בהקדם.`
     );
   }
 }

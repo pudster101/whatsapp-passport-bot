@@ -1,3 +1,13 @@
+/**
+ * whatsapp.js — WhatsApp Business Cloud API adapter.
+ *
+ * Improvements over the original:
+ *   • every sender returns a real boolean (was: undefined on failure)
+ *   • transient failures are retried with backoff
+ *   • approved-template list is fetched once at boot, so rejected templates
+ *     are never attempted (previously 2 guaranteed-failing calls per event)
+ *   • 24-hour-window errors are identified explicitly and logged as such
+ */
 const axios = require('axios');
 const config = require('./config');
 
@@ -8,33 +18,58 @@ const headers = () => ({
   'Content-Type': 'application/json',
 });
 
+// Meta error codes that are worth retrying
+const RETRYABLE = new Set([1, 2, 4, 80007, 130429, 131048, 131056]);
+// 131047 = re-engagement required (outside the 24-hour window)
+const WINDOW_CLOSED = 131047;
+
+let approvedTemplates = new Set();
+let templatesLoaded = false;
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
 /**
- * Send a plain text message
+ * POST to the messages endpoint with retry/backoff.
+ * @returns {{ok: boolean, id?: string, code?: number, detail?: string, windowClosed?: boolean}}
  */
-async function sendText(to, text) {
+async function post(payload, label, attempt = 1) {
   try {
-    const res = await axios.post(BASE_URL, {
-      messaging_product: 'whatsapp',
-      to,
-      type: 'text',
-      text: { body: text },
-    }, { headers: headers() });
-    const msgId = res.data?.messages?.[0]?.id || 'no-id';
-    console.log(`✅ Sent text to ${to} | msg_id=${msgId}`);
-    return res.data;
+    const res = await axios.post(BASE_URL, payload, { headers: headers(), timeout: 15000 });
+    return { ok: true, id: res.data?.messages?.[0]?.id || 'no-id' };
   } catch (err) {
-    const errData = err.response?.data;
-    const code = errData?.error?.code;
-    const subcode = errData?.error?.error_subcode;
-    const detail = errData?.error?.error_data?.details || errData?.error?.message || err.message;
-    console.error(`❌ sendText error to ${to} | code=${code} subcode=${subcode} | ${detail}`);
-    console.error('   Full error:', JSON.stringify(errData || err.message));
+    const errData = err.response?.data?.error;
+    const code = errData?.code;
+    const detail = errData?.error_data?.details || errData?.message || err.message;
+    const isTimeout = err.code === 'ECONNABORTED' || !err.response;
+
+    if ((isTimeout || RETRYABLE.has(code)) && attempt < 3) {
+      const wait = attempt * 800;
+      console.warn(`↻ ${label} attempt ${attempt} failed (${code || err.code}) — retrying in ${wait}ms`);
+      await sleep(wait);
+      return post(payload, label, attempt + 1);
+    }
+
+    if (code === WINDOW_CLOSED) {
+      console.warn(`🕐 ${label}: 24-hour window closed for ${payload.to} — free-form message not delivered`);
+      return { ok: false, code, detail, windowClosed: true };
+    }
+
+    console.error(`❌ ${label} failed | code=${code} | ${detail}`);
+    return { ok: false, code, detail };
   }
 }
 
-/**
- * Send an interactive button message (up to 3 buttons)
- */
+// ─── Senders ──────────────────────────────────────────────────────────────────
+
+async function sendText(to, text) {
+  const r = await post(
+    { messaging_product: 'whatsapp', to, type: 'text', text: { body: text } },
+    `sendText → ${to}`
+  );
+  if (r.ok) console.log(`✅ Sent text to ${to} | msg_id=${r.id}`);
+  return r.ok;
+}
+
 async function sendButtons(to, bodyText, buttons, headerText = null, footerText = null) {
   const payload = {
     messaging_product: 'whatsapp',
@@ -51,117 +86,136 @@ async function sendButtons(to, bodyText, buttons, headerText = null, footerText 
       },
     },
   };
-
   if (headerText) payload.interactive.header = { type: 'text', text: headerText };
   if (footerText) payload.interactive.footer = { text: footerText };
 
-  try {
-    const res = await axios.post(BASE_URL, payload, { headers: headers() });
-    console.log(`✅ Sent buttons to ${to}`);
-    return res.data;
-  } catch (err) {
-    console.error('❌ sendButtons error:', err.response?.data || err.message);
-  }
+  const r = await post(payload, `sendButtons → ${to}`);
+  if (r.ok) console.log(`✅ Sent buttons to ${to}`);
+  return r.ok;
 }
 
-/**
- * Send an interactive list message (up to 10 items)
- */
 async function sendList(to, bodyText, buttonLabel, sections) {
-  try {
-    const res = await axios.post(BASE_URL, {
-      messaging_product: 'whatsapp',
-      to,
-      type: 'interactive',
-      interactive: {
-        type: 'list',
-        body: { text: bodyText },
-        action: {
-          button: buttonLabel,
-          sections,
-        },
-      },
-    }, { headers: headers() });
-    console.log(`✅ Sent list to ${to}`);
-    return res.data;
-  } catch (err) {
-    console.error('❌ sendList error:', err.response?.data || err.message);
-  }
+  const r = await post({
+    messaging_product: 'whatsapp',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'list',
+      body: { text: bodyText },
+      action: { button: buttonLabel, sections },
+    },
+  }, `sendList → ${to}`);
+  if (r.ok) console.log(`✅ Sent list to ${to}`);
+  return r.ok;
 }
 
-/**
- * Send an image message (by public URL)
- */
 async function sendImage(to, imageUrl, caption = '') {
-  try {
-    const payload = {
-      messaging_product: 'whatsapp',
-      to,
-      type: 'image',
-      image: { link: imageUrl },
-    };
-    if (caption) payload.image.caption = caption;
-    const res = await axios.post(BASE_URL, payload, { headers: headers() });
-    const msgId = res.data?.messages?.[0]?.id || 'no-id';
-    console.log(`✅ Sent image to ${to} | msg_id=${msgId}`);
-    return res.data;
-  } catch (err) {
-    const errData = err.response?.data;
-    const detail = errData?.error?.message || err.message;
-    console.error(`❌ sendImage error to ${to}: ${detail}`);
-    console.error('   Full error:', JSON.stringify(errData || err.message));
-  }
+  const payload = {
+    messaging_product: 'whatsapp',
+    to,
+    type: 'image',
+    image: { link: imageUrl },
+  };
+  if (caption) payload.image.caption = caption;
+
+  const r = await post(payload, `sendImage → ${to}`);
+  if (r.ok) console.log(`✅ Sent image to ${to} | msg_id=${r.id}`);
+  return r.ok;
 }
 
+// ─── Templates ────────────────────────────────────────────────────────────────
+
 /**
- * Send a pre-approved WhatsApp template message.
- * Works 24/7 with no session window restriction.
- * @param {string} to - recipient phone
- * @param {string} templateName - e.g. 'pudim_lead_passport'
- * @param {string[]} params - array of variable values for {{1}}, {{2}}, ...
- * @returns {boolean} true if sent successfully
+ * Fetch approved template names once at boot. Any template not in this set is
+ * skipped entirely, so we never burn API calls on rejected templates.
  */
+async function loadApprovedTemplates() {
+  if (!config.WHATSAPP_TOKEN || !config.WABA_ID) {
+    templatesLoaded = true;
+    return approvedTemplates;
+  }
+  try {
+    const res = await axios.get(
+      `https://graph.facebook.com/v18.0/${config.WABA_ID}/message_templates?fields=name,status&limit=100`,
+      { headers: headers(), timeout: 10000 }
+    );
+    approvedTemplates = new Set(
+      (res.data?.data || []).filter(t => t.status === 'APPROVED').map(t => t.name)
+    );
+    templatesLoaded = true;
+    if (approvedTemplates.size) {
+      console.log(`✅ Approved templates: ${[...approvedTemplates].join(', ')}`);
+    } else {
+      console.warn('⚠️  No APPROVED templates — agent alerts rely on the 24-hour window.');
+      console.warn('    Send any message to the bot once a day to keep it open.');
+    }
+  } catch (err) {
+    console.error('⚠️  Could not list templates:', err.response?.data?.error?.message || err.message);
+    templatesLoaded = true;
+  }
+  return approvedTemplates;
+}
+
 async function sendTemplate(to, templateName, params = []) {
+  if (!templatesLoaded) await loadApprovedTemplates();
+  if (!approvedTemplates.has(templateName)) return false; // silent skip — not an error
+
   const components = params.length > 0 ? [{
     type: 'body',
     parameters: params.map(p => ({ type: 'text', text: String(p || '—') })),
   }] : [];
 
-  try {
-    const res = await axios.post(BASE_URL, {
-      messaging_product: 'whatsapp',
-      to,
-      type: 'template',
-      template: {
-        name: templateName,
-        language: { code: 'he' },
-        components,
-      },
-    }, { headers: headers() });
-    const msgId = res.data?.messages?.[0]?.id || 'no-id';
-    console.log(`✅ Sent template "${templateName}" to ${to} | msg_id=${msgId}`);
-    return true;
-  } catch (err) {
-    const errData = err.response?.data;
-    const detail = errData?.error?.message || err.message;
-    console.error(`❌ Template "${templateName}" to ${to} failed: ${detail}`);
-    return false;
-  }
+  const r = await post({
+    messaging_product: 'whatsapp',
+    to,
+    type: 'template',
+    template: { name: templateName, language: { code: 'he' }, components },
+  }, `sendTemplate "${templateName}" → ${to}`);
+
+  if (r.ok) console.log(`✅ Sent template "${templateName}" to ${to} | msg_id=${r.id}`);
+  return r.ok;
 }
 
-/**
- * Mark a message as read
- */
+// ─── Misc ─────────────────────────────────────────────────────────────────────
+
 async function markRead(messageId) {
   try {
-    await axios.post(BASE_URL.replace('/messages', '/messages'), {
+    await axios.post(BASE_URL, {
       messaging_product: 'whatsapp',
       status: 'read',
       message_id: messageId,
-    }, { headers: headers() });
-  } catch (err) {
-    // Non-critical
+    }, { headers: headers(), timeout: 8000 });
+  } catch {
+    // Non-critical — never block the flow on a read receipt
   }
 }
 
-module.exports = { sendText, sendButtons, sendList, sendImage, sendTemplate, markRead };
+/** Split a long reply into natural WhatsApp-sized messages (max 2 by policy). */
+function splitMessage(text, maxLen = 900) {
+  if (text.length <= maxLen) return [text];
+  const paragraphs = text.split('\n\n');
+  const parts = [];
+  let current = '';
+  for (const p of paragraphs) {
+    if ((current + '\n\n' + p).length > maxLen && current) {
+      parts.push(current.trim());
+      current = p;
+    } else {
+      current = current ? `${current}\n\n${p}` : p;
+    }
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts.slice(0, 2);
+}
+
+module.exports = {
+  sendText,
+  sendButtons,
+  sendList,
+  sendImage,
+  sendTemplate,
+  markRead,
+  loadApprovedTemplates,
+  approvedTemplates: () => approvedTemplates,
+  splitMessage,
+};

@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>סימולטור — בוט המכירות</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: "Segoe UI", Arial, sans-serif;
+    background: #0f1419; color: #e7e9ea; height: 100vh; overflow: hidden;
+  }
+  /* min-height:0 is what actually allows the inner panes to scroll —
+     without it a flex/grid child grows to fit its content instead. */
+  .app { display: grid; grid-template-columns: 1fr 380px; height: 100vh; min-height: 0; }
+
+  /* ─── Chat ─────────────────────────────────────────────── */
+  .chat {
+    display: flex; flex-direction: column;
+    border-left: 1px solid #2a3138;
+    min-height: 0; overflow: hidden;
+  }
+  .bar {
+    background: #1f2c33; padding: 12px 18px; display: flex;
+    align-items: center; gap: 12px; border-bottom: 1px solid #2a3138;
+  }
+  .avatar {
+    width: 40px; height: 40px; border-radius: 50%; background: #00a884;
+    display: grid; place-items: center; font-size: 20px;
+  }
+  .bar h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  .bar .sub { font-size: 12px; color: #8696a0; }
+  .bar .spacer { flex: 1; }
+  .bar button, .bar select {
+    background: #2a3942; color: #e7e9ea; border: 1px solid #3b4a54;
+    padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;
+    font-family: inherit;
+  }
+  .bar button:hover { background: #36444d; }
+
+  .msgs {
+    flex: 1 1 auto; min-height: 0;
+    overflow-y: auto; overflow-x: hidden;
+    padding: 20px;
+    background: #0b141a;
+    background-image: radial-gradient(circle at 20% 30%, #12202980 1px, transparent 1px);
+    background-size: 28px 28px;
+    /* flex column instead of floats — floats broke the scroll height */
+    display: flex; flex-direction: column; align-items: stretch;
+  }
+  .msg { max-width: 78%; margin-bottom: 10px; }
+  .msg .bubble {
+    padding: 9px 13px; border-radius: 9px; white-space: pre-wrap;
+    word-wrap: break-word; font-size: 14.5px; line-height: 1.5;
+  }
+  .bot   { align-self: flex-start; }
+  .bot .bubble { background: #202c33; border-top-right-radius: 2px; }
+  .user  { align-self: flex-end; }
+  .user .bubble { background: #005c4b; border-top-left-radius: 2px; }
+  .time { font-size: 10px; color: #8696a0; margin-top: 3px; text-align: left; }
+
+  /* A small marker so you can tell at a glance who wrote each bot message */
+  .msg[data-src="ai"]     .bubble { border-right: 3px solid #00a884; }
+  .msg[data-src="script"] .bubble { border-right: 3px solid #4a5760; }
+  .msg[data-src] .time::after { font-size: 9px; margin-right: 6px; opacity: .75; }
+  .msg[data-src="ai"]     .time::after { content: "· AI"; color: #00a884; }
+  .msg[data-src="script"] .time::after { content: "· תסריט"; color: #8696a0; }
+
+  .options { margin-top: 6px; display: flex; flex-direction: column; gap: 5px; }
+  .options button {
+    background: #202c33; color: #53bdeb; border: 1px solid #2a3942;
+    padding: 9px 12px; border-radius: 8px; cursor: pointer;
+    font-size: 13.5px; text-align: right; font-family: inherit;
+  }
+  .options button:hover { background: #2a3942; }
+  .options .desc { display: block; color: #8696a0; font-size: 11px; margin-top: 2px; }
+
+  .imgcard {
+    background: #202c33; border-radius: 9px; padding: 10px;
+    font-size: 12px; color: #8696a0; border: 1px dashed #3b4a54;
+  }
+
+  .composer { display: flex; gap: 10px; padding: 12px 16px; background: #1f2c33; }
+  .composer input {
+    flex: 1; background: #2a3942; border: none; color: #e7e9ea;
+    padding: 11px 15px; border-radius: 8px; font-size: 14.5px; font-family: inherit;
+  }
+  .composer input:focus { outline: 1px solid #00a884; }
+  .composer button {
+    background: #00a884; border: none; color: #fff; width: 44px;
+    border-radius: 50%; cursor: pointer; font-size: 17px;
+  }
+  .composer button:disabled { opacity: .4; cursor: default; }
+
+  /* ─── Inspector ────────────────────────────────────────── */
+  .panel {
+    overflow-y: auto; min-height: 0;
+    padding: 16px; background: #131c22; font-size: 13px;
+  }
+  .panel h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .8px;
+    color: #8696a0; margin: 18px 0 8px; font-weight: 600;
+  }
+  .panel h2:first-child { margin-top: 0; }
+  .card { background: #1a252c; border-radius: 8px; padding: 12px; }
+  .row { display: flex; justify-content: space-between; padding: 4px 0; gap: 10px; }
+  .row .k { color: #8696a0; }
+  .row .v { font-weight: 600; text-align: left; }
+
+  .meter { height: 7px; background: #2a3942; border-radius: 4px; overflow: hidden; margin: 8px 0 4px; }
+  .meter div { height: 100%; transition: width .35s, background .35s; }
+
+  .chip {
+    display: inline-block; padding: 3px 9px; border-radius: 20px;
+    font-size: 11px; margin: 2px 2px 2px 0;
+  }
+  .chip.warn { background: #4a2c1a; color: #ffb86c; }
+  .chip.ok   { background: #1a3a2a; color: #7ee787; }
+  .chip.info { background: #1a2f3a; color: #58a6ff; }
+  .chip.grey { background: #2a3942; color: #8696a0; }
+
+  .trace {
+    font-family: Consolas, monospace; font-size: 10.5px; color: #7d8b95;
+    background: #0d1418; border-radius: 6px; padding: 9px;
+    max-height: 170px; overflow-y: auto; direction: ltr; text-align: left;
+    white-space: pre-wrap; line-height: 1.5;
+  }
+  .empty { color: #5b6b76; font-style: italic; }
+
+  .quick { display: flex; flex-wrap: wrap; gap: 5px; }
+  .quick button {
+    background: #1a252c; color: #b8c4cc; border: 1px solid #2a3942;
+    padding: 6px 9px; border-radius: 6px; cursor: pointer;
+    font-size: 11.5px; font-family: inherit;
+  }
+  .quick button:hover { background: #22303a; color: #e7e9ea; }
+  .banner {
+    background: #3a2a1a; color: #ffb86c; padding: 9px 12px;
+    border-radius: 7px; font-size: 12px; margin-bottom: 12px; line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- ── Chat ───────────────────────────────────────────── -->
+  <div class="chat">
+    <div class="bar">
+      <div class="avatar">⚖️</div>
+      <div>
+        <h1>משרד עו״ד יהונתן פודים</h1>
+        <div class="sub" id="sub">סימולטור מקומי — לא נשלח לוואטסאפ</div>
+      </div>
+      <div class="spacer"></div>
+      <select id="mode" title="מצב בינה מלאכותית">
+        <option value="off">AI: כבוי</option>
+        <option value="shadow">AI: צל</option>
+        <option value="live">AI: פעיל</option>
+      </select>
+      <button onclick="copyTranscript(this)">📋 העתק שיחה</button>
+      <button onclick="resetChat()">🔄 התחל מחדש</button>
+    </div>
+
+    <div class="msgs" id="msgs"></div>
+
+    <div class="composer">
+      <input id="input" placeholder="כתוב הודעה..." autocomplete="off">
+      <button id="send" onclick="send()">➤</button>
+    </div>
+  </div>
+
+  <!-- ── Inspector ──────────────────────────────────────── -->
+  <div class="panel">
+    <div id="banner"></div>
+
+    <h2>תרחישים מהירים</h2>
+    <div class="quick" id="quick"></div>
+
+    <h2>כוונת רכישה</h2>
+    <div class="card">
+      <div class="meter"><div id="scorebar" style="width:0%;background:#8696a0"></div></div>
+      <div class="row"><span class="k">ניקוד</span><span class="v" id="score">0/100</span></div>
+      <div class="row"><span class="k">רמה</span><span class="v" id="band">—</span></div>
+    </div>
+
+    <h2>מצב במשפך</h2>
+    <div class="card">
+      <div class="row"><span class="k">שלב</span><span class="v" id="stage">—</span></div>
+      <div class="row"><span class="k">מצב פנימי</span><span class="v" id="state">—</span></div>
+      <div class="row"><span class="k">פעולה שנבחרה</span><span class="v" id="action">—</span></div>
+      <div class="row"><span class="k">הודעות</span><span class="v" id="mcount">0</span></div>
+    </div>
+
+    <h2>מה הבוט יודע</h2>
+    <div class="card" id="known"><span class="empty">עדיין כלום</span></div>
+
+    <h2>התנגדויות</h2>
+    <div class="card" id="objections"><span class="empty">אין</span></div>
+
+    <h2>מעקב אוטומטי</h2>
+    <div class="card">
+      <div class="row"><span class="k">נשלחו</span><span class="v" id="fups">0</span></div>
+      <div class="quick" style="margin-top:8px">
+        <button onclick="timeTravel(24)">⏩ +24 שעות</button>
+        <button onclick="timeTravel(96)">⏩ +4 ימים</button>
+        <button onclick="timeTravel(336)">⏩ +14 יום</button>
+      </div>
+      <div id="fupPreview" style="margin-top:9px"></div>
+    </div>
+
+    <h2>מי כתב את התשובה</h2>
+    <div class="card" id="aibox"><span class="empty">שלח הודעה כדי לראות</span></div>
+
+    <h2>מה הנציג מקבל</h2>
+    <div class="card" id="alerts"><span class="empty">עדיין לא נשלחה התראה</span></div>
+
+    <h2>מה קרה מאחורי הקלעים</h2>
+    <div class="trace" id="trace">—</div>
+  </div>
+</div>
+
+<script>
+const PHONE = '9990000001';
+let busy = false;
+
+const SCENARIOS = [
+  ['פתיחה מהמודעה', 'שלום! אפשר לקבל מידע נוסף על זה?'],
+  ['ליד חם',        'אני רוצה להתחיל בתהליך, כמה זה עולה?'],
+  ['התנגדות מחיר',  'זה נשמע יקר מדי בשבילי'],
+  ['מתחרה זול',     'מצאתי משרד אחר שמציע יותר זול'],
+  ['אחשוב על זה',   'אני צריך לחשוב על זה'],
+  ['חוסר אמון',     'איך אני יודע שאתם לא נוכלים?'],
+  ['אין מסמכים',    'אין לי שום מסמכים מרומניה'],
+  ['ספק בזכאות',    'סבא רבא שלי נולד שם, אני בטח לא זכאי'],
+  ['שאלה מורכבת',   'סבתא שלי נולדה בצ׳רנוביץ ב-1931 ועלתה ב-1948, כמה זה עולה?'],
+  ['לקוח כועס',     'אני מחכה שבועיים ואף אחד לא חוזר אלי!'],
+  ['רוצה נציג',     'אני רוצה לדבר עם נציג אנושי'],
+  ['ילדים',         'האם גם הילדים שלי יוכלו לקבל?'],
+  ['שאלה על B1',    'מה זה תעודת B1 ומי חייב אותה?'],
+  ['לעשות לבד',     'למה שלא אעשה את זה לבד?'],
+  ['ספאם',          'BUY CHEAP CRYPTO NOW http://spam.example'],
+  ['הסרה',          'הסר'],
+];
+
+// ─── Boot ────────────────────────────────────────────────
+(async () => {
+  const q = document.getElementById('quick');
+  SCENARIOS.forEach(([label, text]) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.onclick = () => { document.getElementById('input').value = text; send(); };
+    q.appendChild(b);
+  });
+
+  const s = await (await fetch('/api/status')).json();
+  document.getElementById('mode').value = s.aiMode;
+  if (!s.hasKey) {
+    document.getElementById('banner').innerHTML =
+      '<div class="banner">⚠️ אין מפתח Anthropic — הבוט רץ במצב תסריט בלבד.' +
+      ' זו ההתנהגות שהלקוח יקבל אם ה-AI לא זמין.<br>' +
+      'להוספת מפתח: ANTHROPIC_API_KEY בקובץ .env</div>';
+    document.getElementById('mode').disabled = true;
+  }
+  document.getElementById('sub').textContent =
+    'סימולטור מקומי · AI: ' + (s.hasKey ? s.aiMode : 'לא זמין');
+
+  document.getElementById('mode').onchange = async (e) => {
+    await fetch('/api/mode', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ mode: e.target.value }),
+    });
+    document.getElementById('sub').textContent = 'סימולטור מקומי · AI: ' + e.target.value;
+  };
+
+  document.getElementById('input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') send();
+  });
+})();
+
+// ─── Chat rendering ──────────────────────────────────────
+function now() {
+  return new Date().toLocaleTimeString('he-IL', {hour:'2-digit', minute:'2-digit'});
+}
+
+function addMsg(who, text, options, url, ai) {
+  const wrap = document.createElement('div');
+  wrap.className = 'msg ' + who;
+  if (who === 'bot' && ai) {
+    wrap.dataset.src = ai.usedAI ? 'ai' : 'script';
+  }
+
+  if (url) {
+    wrap.innerHTML = '<div class="bubble"><div class="imgcard">🖼️ תמונה נשלחת<br>' +
+      url.replace(/</g,'&lt;') + '</div>' +
+      (text ? '<div style="margin-top:8px">' + esc(text) + '</div>' : '') +
+      '</div><div class="time">' + now() + '</div>';
+  } else {
+    wrap.innerHTML = '<div class="bubble">' + fmt(text) + '</div>' +
+      '<div class="time">' + now() + '</div>';
+  }
+
+  if (options && options.length) {
+    const box = document.createElement('div');
+    box.className = 'options';
+    options.forEach(o => {
+      const b = document.createElement('button');
+      b.innerHTML = esc(o.title) + (o.description ? '<span class="desc">' + esc(o.description) + '</span>' : '');
+      b.onclick = () => tap(o.id, o.title);
+      box.appendChild(b);
+    });
+    wrap.querySelector('.bubble').appendChild(box);
+  }
+
+  const m = document.getElementById('msgs');
+  m.appendChild(wrap);
+  m.scrollTop = m.scrollHeight;
+}
+
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function fmt(s) {
+  return esc(s).replace(/\*([^*\n]+)\*/g, '<b>$1</b>');
+}
+
+// ─── Actions ─────────────────────────────────────────────
+async function post(url, body) {
+  const r = await fetch(url, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(body || {}),
+  });
+  return r.json();
+}
+
+function setBusy(b) {
+  busy = b;
+  document.getElementById('send').disabled = b;
+  document.getElementById('input').disabled = b;
+}
+
+async function send() {
+  const input = document.getElementById('input');
+  const text = input.value.trim();
+  if (!text || busy) return;
+  input.value = '';
+  addMsg('user', text);
+  setBusy(true);
+  try {
+    const r = await post('/api/message', { phone: PHONE, text });
+    render(r);
+  } catch (e) {
+    addMsg('bot', '❌ שגיאה: ' + e.message);
+  }
+  setBusy(false);
+  input.focus();
+}
+
+async function tap(id, title) {
+  if (busy) return;
+  addMsg('user', '▸ ' + title);
+  setBusy(true);
+  const r = await post('/api/message', { phone: PHONE, buttonId: id, title });
+  render(r);
+  setBusy(false);
+}
+
+function render(r) {
+  if (!r.ok) { addMsg('bot', '❌ ' + r.error); return; }
+  (r.messages || []).forEach(m => addMsg('bot', m.text, m.options, m.url, r.ai));
+  if (r.agentAlerts && r.agentAlerts.length) showAlerts(r.agentAlerts);
+  showAi(r.ai, r.ms);
+  updatePanel(r.profile, r.trace, r.ms);
+}
+
+// Running cost across the session, so you can see what a conversation costs
+let totalIn = 0, totalOut = 0, aiTurns = 0;
+
+function showAi(ai, ms) {
+  const box = document.getElementById('aibox');
+  if (!ai) { box.innerHTML = '<span class="empty">—</span>'; return; }
+
+  if (!ai.usedAI) {
+    // An API failure is not the same as "we chose the script" — say so loudly.
+    if (ai.error) {
+      box.innerHTML =
+        '<div><span class="chip warn">⚠ קריאת ה-AI נכשלה</span></div>' +
+        '<div style="margin-top:8px;font-size:12px;color:#ffb86c;line-height:1.5">' +
+        esc(ai.hint || '') + '</div>' +
+        '<div style="margin-top:6px;font-size:10.5px;color:#7d8b95;direction:ltr;text-align:left;' +
+        'background:#0d1418;padding:7px;border-radius:5px">' + esc(ai.error) + '</div>' +
+        '<div style="margin-top:7px;font-size:11.5px;color:#8696a0">' +
+        'הלקוח קיבל תשובה מהתסריט — הבוט לא נשאר שותק.</div>';
+      return;
+    }
+    box.innerHTML =
+      '<div><span class="chip grey">תסריט</span></div>' +
+      '<div style="margin-top:7px;font-size:12px;color:#8696a0;line-height:1.5">' +
+      esc(ai.reason || '') + '</div>' +
+      (ai.blocked ? '<div style="margin-top:6px"><span class="chip warn">נחסם ע״י מנגנון ההגנה</span></div>' : '');
+    return;
+  }
+
+  aiTurns++;
+  totalIn += ai.inputTokens || 0;
+  totalOut += ai.outputTokens || 0;
+
+  // Rough ILS estimate. Haiku ≈ $1/$5 per Mtok, Sonnet ≈ $3/$15 per Mtok.
+  const smart = /sonnet|opus/i.test(ai.model || '');
+  const usd = ((totalIn / 1e6) * (smart ? 3 : 1)) + ((totalOut / 1e6) * (smart ? 15 : 5));
+  const ils = (usd * 3.7).toFixed(3);
+
+  box.innerHTML =
+    '<div><span class="chip ok">✓ נכתב ע״י AI</span> ' +
+    '<span class="chip info">' + esc((ai.model || '').replace(/-\d{8}$/, '')) + '</span></div>' +
+    '<div class="row" style="margin-top:8px"><span class="k">זמן תגובה</span><span class="v">' +
+      ((ai.ms || ms) / 1000).toFixed(1) + ' שנ׳</span></div>' +
+    '<div class="row"><span class="k">טוקנים בתור זה</span><span class="v">' +
+      (ai.inputTokens || 0) + ' / ' + (ai.outputTokens || 0) + '</span></div>' +
+    '<div class="row"><span class="k">עלות השיחה עד כה</span><span class="v">≈ ' + ils + ' ₪</span></div>' +
+    (ai.passages && ai.passages.length
+      ? '<div style="margin-top:8px;font-size:11px;color:#8696a0">נשען על: ' +
+        ai.passages.map(p => esc(p.id)).join(' · ') + '</div>'
+      : '');
+}
+
+function showAlerts(alerts) {
+  const box = document.getElementById('alerts');
+  const seen = new Set();
+  const unique = alerts.filter(a => {
+    if (seen.has(a.text)) return false;
+    seen.add(a.text);
+    return true;
+  });
+  box.innerHTML = unique.map(a =>
+    '<div style="background:#0d1418;padding:10px;border-radius:6px;margin-bottom:8px;' +
+    'font-size:12px;white-space:pre-wrap;line-height:1.55;border-right:3px solid #00a884">' +
+    fmt(a.text) + '</div>' +
+    '<div style="font-size:10.5px;color:#5b6b76;margin:-4px 0 10px">← נשלח ל-' + esc(a.to) + '</div>'
+  ).join('');
+}
+
+/**
+ * Copy the whole conversation as plain text, including who wrote each reply.
+ * Saves scrolling and screenshotting when you want to send it for review.
+ */
+async function copyTranscript(btn) {
+  const lines = [];
+  document.querySelectorAll('#msgs .msg').forEach(m => {
+    const who = m.classList.contains('user') ? 'לקוח' : 'בוט';
+    const src = m.dataset.src === 'ai' ? ' [AI]'
+              : m.dataset.src === 'script' ? ' [תסריט]' : '';
+    const bubble = m.querySelector('.bubble');
+    if (!bubble) return;
+    // strip the option buttons out of the text
+    const clone = bubble.cloneNode(true);
+    const opts = clone.querySelector('.options');
+    const optText = opts ? '\n[אפשרויות: ' +
+      [...opts.querySelectorAll('button')].map(b => b.childNodes[0].textContent.trim()).join(' | ') + ']' : '';
+    if (opts) opts.remove();
+    lines.push(`${who}${src}: ${clone.innerText.trim()}${optText}`);
+  });
+
+  if (!lines.length) { flash(btn, 'אין מה להעתיק'); return; }
+
+  const p = lastProfile || {};
+  const header = [
+    '─── שיחת סימולטור ───',
+    `תאריך: ${new Date().toLocaleString('he-IL')}`,
+    `ניקוד: ${p.score ?? '-'}/100 · שלב: ${p.stageLabel || '-'}`,
+    p.eligibility && p.eligibility.group ? `מסלול משוער: קבוצה ${p.eligibility.group}` : '',
+    '',
+  ].filter(Boolean).join('\n');
+
+  const text = header + lines.join('\n\n');
+  try {
+    await navigator.clipboard.writeText(text);
+    flash(btn, '✓ הועתק');
+  } catch {
+    // Clipboard blocked — fall back to a selectable textarea
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;top:10%;right:10%;width:80%;height:70%;z-index:99;direction:rtl';
+    document.body.appendChild(ta);
+    ta.select();
+    flash(btn, 'סמן והעתק ידנית');
+    ta.onblur = () => ta.remove();
+  }
+}
+
+function flash(btn, msg) {
+  const old = btn.textContent;
+  btn.textContent = msg;
+  setTimeout(() => { btn.textContent = old; }, 1600);
+}
+
+let lastProfile = null;
+
+async function resetChat() {
+  await post('/api/reset', { phone: PHONE });
+  document.getElementById('msgs').innerHTML = '';
+  document.getElementById('fupPreview').innerHTML = '';
+  document.getElementById('alerts').innerHTML = '<span class="empty">עדיין לא נשלחה התראה</span>';
+  updatePanel(null, [], 0);
+}
+
+async function timeTravel(hours) {
+  const r = await post('/api/timetravel', { phone: PHONE, hours });
+  const box = document.getElementById('fupPreview');
+  if (!r.ok) { box.innerHTML = '<span class="empty">' + esc(r.error) + '</span>'; return; }
+  box.innerHTML = r.followUpDue
+    ? '<div class="chip ok">מעקב יישלח</div><div style="margin-top:7px;font-size:12px;' +
+      'background:#0d1418;padding:9px;border-radius:6px;white-space:pre-wrap;line-height:1.5">' +
+      fmt(r.preview) + '</div>'
+    : '<span class="empty">אין מעקב מתוזמן כרגע (' + esc(r.reason || '') + ')</span>';
+  if (r.profile) updatePanel(r.profile, [], 0);
+}
+
+// ─── Inspector ───────────────────────────────────────────
+const ELIG_LABELS = {
+  ancestor: 'בן משפחה', birthYear: 'שנת לידה', birthPlace: 'מקום לידה',
+  leftYear: 'שנת עזיבה', territory: 'אזור', likelyArticle: 'סעיף משוער',
+  hasDocuments: 'מסמכים', b1Status: 'סטטוס B1',
+};
+
+function updatePanel(p, trace, ms) {
+  const el = id => document.getElementById(id);
+  lastProfile = p;
+
+  if (!p) {
+    el('score').textContent = '0/100';
+    el('band').textContent = '—';
+    el('scorebar').style.width = '0%';
+    ['stage','state','action'].forEach(k => el(k).textContent = '—');
+    el('mcount').textContent = '0';
+    el('known').innerHTML = '<span class="empty">עדיין כלום</span>';
+    el('objections').innerHTML = '<span class="empty">אין</span>';
+    el('fups').textContent = '0';
+    el('trace').textContent = '—';
+    return;
+  }
+
+  const score = p.score || 0;
+  el('score').textContent = score + '/100';
+  el('band').textContent = p.band || '—';
+  const bar = el('scorebar');
+  bar.style.width = score + '%';
+  bar.style.background = score >= 70 ? '#f85149' : score >= 40 ? '#d29922' : '#8696a0';
+
+  el('stage').textContent  = p.stageLabel || '—';
+  el('state').textContent  = p.state || '—';
+  el('action').textContent = p.nextAction || '—';
+  el('mcount').textContent = p.messageCount || 0;
+
+  // Known facts
+  const known = [];
+  if (p.name) known.push(['שם', p.name]);
+  if (p.clientPhone) known.push(['טלפון', p.clientPhone]);
+  if (p.interest?.length) known.push(['עניין', p.interest.join(', ')]);
+  if (p.motivation) known.push(['מניע', p.motivation]);
+  if (p.urgency) known.push(['דחיפות', p.urgency]);
+  for (const [k, v] of Object.entries(p.eligibility || {})) {
+    if (v !== null && v !== undefined && v !== '') known.push([ELIG_LABELS[k] || k, v]);
+  }
+  el('known').innerHTML = known.length
+    ? known.map(([k, v]) => '<div class="row"><span class="k">' + esc(k) +
+        '</span><span class="v">' + esc(v) + '</span></div>').join('') +
+      (p.missing?.length
+        ? '<div style="margin-top:8px">' + p.missing.map(m =>
+            '<span class="chip grey">חסר: ' + esc(m) + '</span>').join('') + '</div>'
+        : '') +
+      (p.leadSaved ? '<div style="margin-top:8px"><span class="chip ok">✓ ליד נשמר</span></div>' : '') +
+      (p.humanStatus && p.humanStatus !== 'none'
+        ? '<div style="margin-top:6px"><span class="chip info">נציג: ' + esc(p.humanStatus) + '</span></div>' : '') +
+      (p.optedOut ? '<div style="margin-top:6px"><span class="chip warn">הוסר מרשימה</span></div>' : '')
+    : '<span class="empty">עדיין כלום</span>';
+
+  // Objections
+  el('objections').innerHTML = (p.objections || []).length
+    ? p.objections.map(o => '<span class="chip ' + (o.resolved ? 'ok' : 'warn') + '">' +
+        esc(o.label) + (o.resolved ? ' ✓' : '') + '</span>').join('')
+    : '<span class="empty">אין</span>';
+
+  el('fups').textContent = p.followUpsSent || 0;
+
+  if (trace && trace.length) {
+    el('trace').textContent = trace.join('\n') + (ms ? '\n\n⏱ ' + ms + 'ms' : '');
+  }
+}
+</script>
+</body>
+</html>

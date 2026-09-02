@@ -199,6 +199,30 @@ async function handleMessage(phone, message) {
   profile.messageCount = (profile.messageCount || 0) + 1;
   if (text && !buttonId) pushHistory(session, 'user', text);
 
+  // ── Click-to-WhatsApp attribution ─────────────────────────────────────────
+  // Meta attaches `referral` to the FIRST message after an ad click, and only
+  // that one. It is never resent, so if it is not captured here it is lost.
+  // source_id is the ad id and joins straight to the Meta Ads data;
+  // ctwa_clid is the key for reporting conversions back to Meta.
+  if (message.referral && !profile.attribution) {
+    const r = message.referral;
+    profile.attribution = {
+      sourceId:   r.source_id   || null,   // ad id → joins to Meta Ads reporting
+      sourceType: r.source_type || null,   // 'ad' | 'post'
+      sourceUrl:  r.source_url  || null,
+      headline:   r.headline    || null,   // the creative they actually clicked
+      body:       r.body        || null,
+      mediaType:  r.media_type  || null,
+      ctwaClid:   r.ctwa_clid   || null,   // conversion-attribution key
+      capturedAt: new Date().toISOString(),
+    };
+    profile.source   = 'meta_ad';
+    profile.campaign = r.source_id || null;
+    save(phone, session);
+    storage.logEvent(phone, 'attribution_captured', profile.attribution);
+    console.log(`🎯 [${phone}] CTWA attribution captured — ad=${r.source_id || '?'} clid=${r.ctwa_clid ? 'yes' : 'no'}`);
+  }
+
   console.log(`📩 [${phone}] state=${session.state} stage=${profile.stage} score=${profile.buyingIntent} | "${text}" ${buttonId ? `btn=${buttonId}` : ''}`);
 
   // ── Burst protection ──────────────────────────────────────────────────────
@@ -823,7 +847,11 @@ async function maybeSaveLead(phone, session) {
     waPhone: phone,
     name: p.name,
     clientPhone: p.clientPhone,
-    source: p.interest?.includes('b1_course') ? 'romanian_course' : 'passport',
+    // `source` is WHERE the lead came from; `interest` is WHAT they want.
+    // These used to be collapsed into one field, which discarded attribution.
+    source: p.source || 'unknown',
+    attribution: p.attribution || null,
+    campaign: p.campaign || null,
     interest: p.interest,
     familyMember: e.ancestor,
     birthYear: e.birthYear,

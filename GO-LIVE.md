@@ -318,6 +318,7 @@ Base address: `https://whatsapp-passport-bot-production.up.railway.app`
 
 | What you want | Address |
 |---|---|
+| **Watch conversations live** | `/admin/live?token=YOUR_PASSWORD` |
 | All conversations | `/admin/transcripts?token=YOUR_PASSWORD` |
 | One conversation | `/admin/transcripts?token=YOUR_PASSWORD&phone=972501234567` |
 | Download as a file | `/admin/transcripts?token=YOUR_PASSWORD&download=1` |

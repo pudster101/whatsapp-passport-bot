@@ -6,3 +6,7 @@ node_modules/
 trainer/runs/
 trainer/__pycache__/
 *.pyc
+
+# Editor/agent backups
+*.bak-*
+*.bak

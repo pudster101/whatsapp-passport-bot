@@ -186,6 +186,82 @@ app.get('/admin/conversations', requireAdmin, (req, res) => {
 });
 
 /**
+ * A live view of conversations happening right now.
+ *
+ * The transcripts endpoint is for reading afterwards; this one is for watching
+ * while it happens. It refreshes itself, newest conversation first, so it can
+ * be left open on a second screen during the day.
+ */
+app.get('/admin/live', requireAdmin, (req, res) => {
+  const every = Math.max(3, parseInt(req.query.refresh || '8', 10));
+  const token = req.query.token || '';
+  const all = storage.getAllConversations();
+
+  const esc = (t) => String(t == null ? '' : t)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const time = (d) => {
+    try {
+      return new Date(d).toLocaleTimeString('he-IL', {
+        timeZone: config.TIMEZONE, hour: '2-digit', minute: '2-digit',
+      });
+    } catch { return ''; }
+  };
+
+  const entries = Object.entries(all)
+    .sort((a, b) =>
+      new Date(b[1].profile?.lastInboundAt || 0) - new Date(a[1].profile?.lastInboundAt || 0))
+    .slice(0, 20);
+
+  const cards = entries.map(([phone, s]) => {
+    const p = s.profile || {};
+    const mins = p.lastInboundAt
+      ? Math.round((Date.now() - new Date(p.lastInboundAt).getTime()) / 60000)
+      : null;
+    const live = mins !== null && mins < 5;
+    const msgs = (s.history || []).slice(-8).map(m => `
+      <div class="m ${m.role === 'user' ? 'u' : 'b'}">
+        <span class="t">${time(m.at)}</span>${esc(m.text)}
+      </div>`).join('');
+
+    return `
+    <div class="c ${live ? 'on' : ''}">
+      <div class="h">
+        <b>${esc(p.name || '+' + phone)}</b>
+        ${p.clientPhone ? `<span class="p">${esc(p.clientPhone)}</span>` : ''}
+        <span class="s">${p.buyingIntent || 0}/100</span>
+        ${live ? '<span class="dot">● פעיל עכשיו</span>'
+               : `<span class="ago">לפני ${mins === null ? '?' : mins} דק׳</span>`}
+      </div>
+      ${msgs || '<div class="e">אין הודעות</div>'}
+      <a class="full" href="/admin/transcripts?token=${encodeURIComponent(token)}&phone=${encodeURIComponent(phone)}">התמליל המלא ←</a>
+    </div>`;
+  }).join('');
+
+  res.type('html').send(`<!doctype html><html lang="he" dir="rtl"><head>
+<meta charset="utf-8"><meta http-equiv="refresh" content="${every}">
+<title>שיחות עכשיו</title><style>
+body{font-family:system-ui,'Segoe UI',Arial;background:#0e1113;color:#e6e8ea;margin:0;padding:16px}
+h1{font-size:17px;margin:0 0 4px}
+.sub{color:#8b949e;font-size:12px;margin-bottom:16px}
+.c{background:#161b22;border:1px solid #21262d;border-radius:10px;padding:12px;margin-bottom:12px}
+.c.on{border-color:#2ea043}
+.h{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;font-size:13px}
+.p{color:#8b949e}.s{background:#21262d;padding:2px 8px;border-radius:20px;font-size:11px}
+.dot{color:#3fb950;font-size:11px}.ago{color:#8b949e;font-size:11px}
+.m{padding:6px 10px;border-radius:8px;margin:4px 0;font-size:13px;line-height:1.5;white-space:pre-wrap}
+.m.u{background:#1f6feb22;border-right:2px solid #1f6feb}
+.m.b{background:#21262d;border-right:2px solid #484f58}
+.t{color:#6e7681;font-size:10px;margin-left:8px}
+.e{color:#6e7681;font-size:12px}
+.full{color:#58a6ff;font-size:11px;text-decoration:none}
+</style></head><body>
+<h1>שיחות עכשיו</h1>
+<div class="sub">מתרענן כל ${every} שניות · ${entries.length} שיחות אחרונות · ירוק = פעיל בחמש הדקות האחרונות</div>
+${cards || '<div class="e">אין שיחות עדיין.</div>'}
+</body></html>`);
+});
+
+/**
  * Read one conversation, or all of them, as plain text.
  *
  *   /admin/transcripts?token=...              → every conversation, readable

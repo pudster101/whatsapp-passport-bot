@@ -367,7 +367,19 @@ const STATUS_CERTAINTY = [
   /ה?אזרחות(?:\s+\S+){0,3}?\s+(?:לא\s+)?נשללה\s*[,،.]/,
   /ברור ש(?:ה)?אזרחות/,
 ];
-const HEDGED = /(?:נראה|כנראה|לפי מה שסיפרת|צריך לאמת|השערה|לבדוק מול|יש לאמת|לכאורה|ככל הנראה)/;
+const HEDGED = /(?:נראה|כנראה|לפי מה שסיפרת|צריך לאמת|השערה|לבדוק מול|יש לאמת|לכאורה|ככל הנראה|סבירות גבוהה|בדיקה מעמיקה|יש חריגים|טעון בדיקה|צריך לבדוק)/;
+
+/**
+ * A route stated as settled fact. The firm's rule: the classification is
+ * highly likely, never certain — there are always exceptions, and only a
+ * proper review settles it. "עלייה ב-1961 פירושה שהאזרחות אבדה" reads as a
+ * determination, and a determination is what we must not make.
+ */
+const ROUTE_AS_FACT = [
+  /\d{4}\s+(?:פירוש[הו]|אומרת?|משמעות[הו])\s+ש/,
+  /(?:אתה|את)\s+במסלול\s+(?:של\s+)?סעיף/,
+  /(?:המסלול|התיק)\s+שלך\s+הוא\s+סעיף/,
+];
 
 /**
  * Comparative price claims. The fee guard catches numbers, but "ההבדל הוא
@@ -493,6 +505,11 @@ function enforceGuardrails(text, profile = null) {
   // A duration attached to this lead's own case — not a general corpus fact.
   if (CASE_SCOPED.test(text) && DURATION.test(text)) {
     console.warn(`🛑 Guardrail: case-specific timeline → "${text.match(DURATION)[0]}"`);
+    return null;
+  }
+  // A route presented as a determination rather than a strong likelihood.
+  if (ROUTE_AS_FACT.some(re => re.test(text)) && !HEDGED.test(text)) {
+    console.warn('🛑 Guardrail: route stated as settled fact without hedging');
     return null;
   }
   // Revocation status stated as settled fact, with no hedge anywhere in the reply.

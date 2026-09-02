@@ -316,6 +316,43 @@ async function run() {
     check('general explanation of the rule allowed', general !== null);
   }
 
+  // ── 7d. From the first live conversation, 2 Sep ───────────────────────────
+  section('7d. Live conversation findings');
+  {
+    const retrieve = require('../src/kb/retrieve');
+    // The customer answered "נולדה בשנת 1923 ביאשי" and got a lecture on the
+    // structure of the B1 exam. That passage shared no word with the message.
+    const noise = retrieve.forIntent('unclear', 'נולדה בשנת 1923 ביאשי', []);
+    check('a bare fact retrieves nothing irrelevant',
+      !noise.some(p => p.id.startsWith('b1_')), noise.map(p => p.id).join(','));
+
+    // But deliberate context rules must still work.
+    const year = retrieve.forIntent('ask_eligibility', 'סבא עזב ב-1951', []);
+    check('a departure year still finds the route passage',
+      year.some(p => p.id === 'group_1_no_limit'), year.map(p => p.id).join(','));
+
+    const b1 = retrieve.forIntent('ask_b1', 'מה זה B1?', []);
+    check('a real B1 question still finds B1 passages',
+      b1.some(p => p.id.startsWith('b1_')), b1.map(p => p.id).join(','));
+  }
+  {
+    // The route is a strong likelihood, never a determination.
+    const stated = brain.enforceGuardrails(
+      'עלייה ב-1961 פירושה שהאזרחות של סבתא אבדה — מסלול השבת אזרחות',
+      { eligibility: { leftYear: '1961', birthPlace: 'יאשי' } });
+    check('route stated as fact is blocked', stated === null);
+
+    const hedged = brain.enforceGuardrails(
+      'לפי שנת העלייה, בסבירות גבוהה מדובר בהשבת אזרחות — אבל זה דורש בדיקה מעמיקה כי יש חריגים',
+      { eligibility: { leftYear: '1961', birthPlace: 'יאשי' } });
+    check('the same route, hedged, is allowed', hedged !== null);
+
+    const direct = brain.enforceGuardrails(
+      'אתה במסלול סעיף 10',
+      { eligibility: { leftYear: '1961', birthPlace: 'יאשי' } });
+    check('"you are on Article 10" is blocked', direct === null);
+  }
+
   // ── 8. Angry customer ──────────────────────────────────────────────────────
   section('8. Angry customer');
   {

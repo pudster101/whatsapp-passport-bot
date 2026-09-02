@@ -111,13 +111,32 @@ function retrieve(query, opts = {}) {
     }
 
     // Semantic boosts — meaning a keyword scorer alone would miss
-    score += contextBoost(query, qLower, entry.passage.id);
+    const boost = contextBoost(query, qLower, entry.passage.id);
+    score += boost;
 
-    return { entry, score };
+    return { entry, score, boost };
   });
 
+  // A passage must actually be ABOUT the message, not merely score above zero.
+  //
+  // Live conversation, 2 Sep: the customer answered "נולדה בשנת 1923 ביאשי" and
+  // the bot recited the structure of the B1 language exam — 45 minutes reading,
+  // 60 minutes writing — which had nothing to do with anything. That passage
+  // shared not one word with the message; it won on residual scoring noise.
+  //
+  // So: a passage needs a real lexical or topical hit, not just a positive
+  // number. When nothing is genuinely relevant we return nothing, and the model
+  // answers from the conversation instead of reciting a leaflet.
+  const MIN_SCORE = 3.0;
+
   return scored
-    .filter(s => s.score > 0.8 && !exclude.includes(s.entry.passage.id))
+    .filter(s => s.score >= MIN_SCORE
+              // Either the passage genuinely shares wording with the message,
+              // or a context rule deliberately chose it (a year of departure
+              // pointing at the route passages, for instance). What we refuse
+              // is a passage that arrived on scoring residue alone.
+              && (sharesRealTerm(qTokens, s.entry) || s.boost >= 5)
+              && !exclude.includes(s.entry.passage.id))
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .map(s => ({
@@ -141,6 +160,24 @@ const PLACES_ART11 = /צ׳רנוביץ|צרנוביץ|צ'רנוביץ|בוקוב
 const PLACES_ART10 = /בוקרשט|יאשי|יאסי|גלאץ|קונסטנצה|בקאו|בראילה/i;
 const MONEY_WORDS  = /יקר|זול|תקציב|כסף|לשלם|עלות|מחיר|שכר טרחה|כמה זה|כמה עולה/i;
 const AGE_RE       = /(?:בן|בת|גיל)\s*(\d{2})|(\d{2})\s*(?:שנה|שנים)/;
+
+
+/**
+ * Does the query share at least one meaningful term with the passage?
+ * Bare numbers do not count — a year in the message must not marry itself to
+ * an unrelated passage that happens to contain digits.
+ */
+function sharesRealTerm(qTokens, entry) {
+  for (const term of qTokens) {
+    // "b1" is two characters and entirely meaningful; "של" is two characters
+    // and entirely not. Keep short terms that mix letters and digits.
+    if (term.length < 3 && !/[a-z].*\d|\d.*[a-z]/i.test(term)) continue;
+    if (/^\d+$/.test(term)) continue;              // years, ages, amounts
+    if (entry.topicSet.has(term)) return true;
+    if (entry.freq[term]) return true;   // appears in the passage body
+  }
+  return false;
+}
 
 function contextBoost(rawQuery, qLower, passageId) {
   let boost = 0;

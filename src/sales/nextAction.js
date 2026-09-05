@@ -275,4 +275,5 @@ function decide({ analysis, profile, text, recentClose = false }) {
   };
 }
 
-module.exports = { ACTIONS, decide };
+module.exports = {
+  normaliseAncestor, ACTIONS, decide };

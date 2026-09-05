@@ -353,6 +353,33 @@ async function run() {
     check('"you are on Article 10" is blocked', direct === null);
   }
 
+  // ── 7e. From the live conversation of 5 Sep ───────────────────────────────
+  section('7e. Live conversation, 5 Sep');
+  {
+    // "בתחילת שנות ה-50" was turned into 1950 and the lead was told, as fact,
+    // that citizenship was kept and no B1 was needed. It could have been 1953.
+    const approx = leadProfile.deriveGroup({ leftYear: '1951', leftYearApprox: true });
+    check('an approximate year classifies nothing', !approx.group);
+    check('and asks for the exact year', approx.needsExactLeftYear === true);
+
+    const exact = leadProfile.deriveGroup({ leftYear: '1951' });
+    check('an exact year still classifies', exact.group === 'hesder');
+
+    const claim = 'בשנים האלה האזרחות לא אבדה, ההורים שלך נשארו אזרחים ולא תצטרך B1';
+    check('short-track claim blocked on an approximate year',
+      brain.enforceGuardrails(claim, { eligibility: { leftYear: '1951', leftYearApprox: true } }) === null);
+    check('same claim allowed on an exact 1951',
+      brain.enforceGuardrails(claim, { eligibility: { leftYear: '1951' } }) !== null);
+  }
+  {
+    const closing = require('../src/sales/closing');
+    // The lead said "יום ראשון בבוקר" and was asked "מתי נוח לך?" three more times.
+    check('a spoken time counts as scheduled', closing.alreadyScheduled('יום ראשון בבוקר'));
+    check('so does a bare "בבוקר"', closing.alreadyScheduled('בבוקר'));
+    check('office hours are not an appointment',
+      !closing.alreadyScheduled('התקשר 03-5517801 · א׳–ה׳ 09:00–18:00'));
+  }
+
   // ── 8. Angry customer ──────────────────────────────────────────────────────
   section('8. Angry customer');
   {

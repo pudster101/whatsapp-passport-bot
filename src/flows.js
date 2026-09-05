@@ -296,6 +296,11 @@ async function handleMessage(phone, message) {
     session.state = 'WELCOME_SENT';
     session.data = {};
     await handleStart(phone, session, { keepProfile: true });
+    // The opening no longer pushes a menu at people, but someone who typed
+    // "תפריט" is asking for one. Show it.
+    await new Promise(r => setTimeout(r, 400));
+    await showInterestButtons(phone);
+    save(phone, session);
     return;
   }
 
@@ -345,16 +350,20 @@ async function handleStart(phone, session, opts = {}) {
   save(phone, session);
 
   // Customer first — agent notification never blocks the reply
+  // Someone who clicked an ad about Romanian citizenship already knows why they
+  // are here. The old opening gave them four lines of introduction and then a
+  // four-option menu — a decision to make before they had learned anything. The
+  // first real ad lead, 2 Sep, read it and went silent.
+  //
+  // So: one line of who we are, and one concrete question they can answer from
+  // memory. The menu still exists behind the word "תפריט" for anyone who wants it.
   const returning = (profile.messageCount || 0) > 1 && profile.name;
   const welcome = returning
     ? `היי ${profile.name}! 👋 טוב לשמוע ממך שוב.\n\nבמה אוכל לעזור הפעם?`
-    : `היי! 👋 תודה שפנית אלינו למשרד עורך דין יהונתן פודים — *השער שלך לרומניה*.\n\n` +
-      `אני כאן כדי לבדוק עבורך *זכאות לדרכון רומני* וללוות אותך עד שיחת ייעוץ עם עו״ד מהמשרד.\n\n` +
-      `כדי להתחיל — מה גרם לך להתעניין?`;
+    : `היי! 👋 הגעת למשרד עו״ד יהונתן פודים — *השער שלך לרומניה*.\n\n` +
+      `בוא נראה מה המצב שלך. *מי במשפחה נולד ברומניה?* (הורה / סב / סבתא)`;
 
   await reply(phone, session, welcome);
-  await new Promise(r => setTimeout(r, 400));
-  await showInterestButtons(phone);
   save(phone, session);
 
   storage.logEvent(phone, 'stage_changed', { stage: profile.stage, from: 'NEW_LEAD' });
@@ -533,22 +542,39 @@ async function handleFreeText(phone, session, text, opts = {}) {
   // 3b. Contact details just completed — confirm it. Anything else here
   //     (a generic "I didn't understand") would be a terrible experience
   //     right at the moment of conversion.
+  const historyText = (session.history || []).map(h => h.text).join(' ');
+  const timeAgreed = closing.alreadyScheduled(historyText) || closing.alreadyScheduled(text);
+
   if (!hadContact && leadProfile.hasContactDetails(p)) {
     p.stage = stages.shouldAdvance(p.stage, 'CONVERSION');
     session.state = 'COMPLETE';
-    // Never close with a vague "we'll get back to you soon" — ask WHEN.
-    // A concrete time turns a captured lead into a scheduled conversation.
     const isCourse = p.interest?.includes('b1_course');
+    // If a time was already agreed earlier in the conversation, asking again is
+    // what made a lead on 5 Sep repeat "בבוקר" three times.
+    const ask = timeAgreed
+      ? `נתראה במועד שסיכמנו. אם משהו משתנה — *${closing.OFFICE_PHONE}*.`
+      : `*מתי נוח לך?* בוקר (09:00-12:00) או אחר הצהריים (14:00-18:00)?`;
     await reply(phone, session, isCourse
-      ? `🎉 *תודה, ${p.name}!*\n\nקיבלנו את הפרטים לגבי *קורס הרומנית B1*.\n\n` +
-        `*מתי נוח לך שנתקשר?* בוקר (09:00-12:00) או אחר הצהריים (14:00-18:00)?`
-      : `🎉 *מצוין, ${p.name}!*\n\nהפרטים אצלנו ועו״ד פודים יחזור אליך אישית.\n\n` +
-        `*מתי נוח לך?* בוקר (09:00-12:00) או אחר הצהריים (14:00-18:00)?\n\n` +
+      ? `🎉 *תודה, ${p.name}!*\n\nקיבלנו את הפרטים לגבי *קורס הרומנית B1*.\n\n${ask}`
+      : `🎉 *מצוין, ${p.name}!*\n\nהפרטים אצלנו ועו״ד פודים יחזור אליך אישית.\n\n${ask}\n\n` +
         `_השיחה ללא התחייבות — הערכת סיכוי, מה צריך לאתר, וטווחי זמן ועלות למקרה שלך._`
     );
     await maybeSaveLead(phone, session);
-    await new Promise(r => setTimeout(r, 500));
-    await showInterestButtons(phone);
+    save(phone, session);
+    return;
+  }
+
+  // 3c. Everything is done — details captured and a time agreed. From here the
+  //     only correct reply is a short acknowledgement. On 5 Sep the bot instead
+  //     re-sent the consultation blurb twice and then offered an email address,
+  //     after the lead had already booked Sunday morning.
+  if (leadProfile.hasContactDetails(p) && timeAgreed) {
+    const acks = [
+      'מצוין, רשמתי. 👍 נדבר אז.',
+      'סגור. 👍 עו״ד פודים יחזור אליך במועד שסיכמנו.',
+      `רשום. אם משהו משתנה — *${closing.OFFICE_PHONE}*.`,
+    ];
+    await reply(phone, session, acks[(p.messageCount || 0) % acks.length]);
     save(phone, session);
     return;
   }
@@ -1264,6 +1290,41 @@ function routeSummary(profile) {
 }
 
 function fallbackFor(analysis, profile, text = '', session = null, forceCta = false) {
+  // A short answer to the question we just asked — "סבתא", "ביאשי", "1930" —
+  // is a fact, not a question. Searching the corpus for it answered the word
+  // "סבתא" with a document checklist, the same mistake as the B1 lecture.
+  // While facts are still missing, the next move is the next question.
+  // Recognise a fact by what it CONTAINS, not by what it lacks. A blacklist of
+  // question words fails in Hebrew — \b is ASCII-only and never matches before
+  // a Hebrew letter — and it also mislabels "אהה אני לא בטוח מה" as an answer.
+  // So: it must actually look like one. A relative, a year, or a place.
+  const t = String(text).trim();
+  const LOOKS_LIKE_ANSWER =
+    /סב(א|תא)|אבא|אמא|הורה|דוד|דודה|אב שלי|אם שלי/.test(t) ||
+    /\b(1[89]\d{2}|20[0-2]\d)\b/.test(t) ||
+    /בוקרשט|יאשי|יאסי|קישינב|צ׳רנוביץ|צרנוביץ|בסרביה|בוקובינה|טרנסילבניה|גלאץ|קונסטנצה/.test(t);
+
+  const bareFact =
+    t.length < 25 &&
+    !t.includes('?') &&
+    LOOKS_LIKE_ANSWER &&
+    leadProfile.missingFacts(profile).length > 0;
+
+  if (bareFact) {
+    const next = leadProfile.missingFacts(profile)[0];
+    const who = nextAction.normaliseAncestor
+      ? nextAction.normaliseAncestor(profile.eligibility?.ancestor)
+      : (profile.eligibility?.ancestor || 'אותו בן משפחה');
+    const asks = {
+      ancestor:   'כדי לבדוק את הזכאות — *מי במשפחה נולד ברומניה?* (הורה / סב / סבתא)',
+      birthPlace: `ואיפה בערך ${who} נולד/ה? *עיר או אזור ברומניה* — זה קובע את המסלול.`,
+      leftYear:   `ועכשיו השאלה הכי חשובה — *באיזו שנה בערך ${who} עלה/תה לישראל?*\n\n` +
+                  `_שנת העלייה קובעת את המסלול, ולכן גם אם צריך מבחן שפה._`,
+      birthYear:  `ומה *שנת הלידה המשוערת* של ${who}?`,
+    };
+    if (asks[next]) return asks[next];
+  }
+
   // Prefer a corpus-grounded answer over a canned paragraph
   const fromCorpus = answerFromCorpus(text, analysis, profile, session, forceCta);
   if (fromCorpus) return fromCorpus;

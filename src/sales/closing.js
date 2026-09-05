@@ -125,7 +125,12 @@ function alreadyScheduled(text) {
   return (
     /\b\d{1,2}[:.]\d{2}\b/.test(t) ||          // a single clock time: 09:30
     /(?:מחכה|נתראה|נדבר|מדברים)\s+(?:ל?שיחה|מחר|ביום)/.test(t) ||
-    /קבענו|סגרנו על|נקבע ל/.test(t)
+    /קבענו|סגרנו על|נקבע ל/.test(t) ||
+    // A customer who answers "יום ראשון בבוקר" or "מחר אחר הצהריים" HAS chosen
+    // a time. On 5 Sep the bot asked "מתי נוח לך?" three more times after
+    // exactly that, and the lead had to repeat himself twice.
+    /(?:היום|מחר|ביום\s+\S+|יום\s+(?:ראשון|שני|שלישי|רביעי|חמישי))\s*,?\s*(?:ב?בוקר|אחר\s+הצהריים|בערב)/.test(t) ||
+    /^\s*(?:ב?בוקר|אחר\s+הצהריים|בערב)\s*$/.test(t.trim())
   );
 }
 

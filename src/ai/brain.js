@@ -167,6 +167,10 @@ function normalise(parsed, text, profile) {
     birthYear: entities.birthYear ? String(entities.birthYear).match(/\d{4}/)?.[0] || null : null,
     birthPlace: entities.birthPlace || null,
     leftYear: entities.leftYear ? String(entities.leftYear).match(/\d{4}/)?.[0] || null : null,
+    // "בתחילת שנות ה-50" is not 1950. A live lead on 5 Sep gave exactly that
+    // and was told, definitively, that citizenship had been kept and no B1 was
+    // needed — a claim that only holds for 1950-1952. It could have been 1953.
+    leftYearApprox: !!entities.leftYearApprox,
     hasDocuments: entities.hasDocuments ?? null,
     b1Status: entities.b1Status || null,
   };
@@ -465,6 +469,9 @@ function claimsShortTrack(text, profile) {
   if (!ABOUT_THIS_LEAD.test(text)) return false;      // general explanation — fine
   if (!SHORT_TRACK_CLAIM.some(re => re.test(text))) return false;
 
+  // An approximate year cannot support a claim that depends on hitting an exact
+  // three-year window. "תחילת שנות ה-50" is treated exactly like no year at all.
+  if (profile?.eligibility?.leftYearApprox) return true;
   const leftYear = parseInt(profile?.eligibility?.leftYear, 10);
   if (!leftYear) return true;                          // no year → no claim allowed
   const kept = (leftYear >= 1950 && leftYear <= 1952) ||

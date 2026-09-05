@@ -232,6 +232,13 @@ function deriveGroup(elig) {
   // short track" here is exactly the error the firm caught in live chats.
   if (!leftYear) return elig;
 
+  // An approximate year is not enough either. The windows are three years wide;
+  // "early 50s" spans 1950 to 1954 and lands in two different routes. Record it,
+  // flag that the exact year is still needed, and classify nothing.
+  if (elig.leftYearApprox) {
+    return { ...elig, needsExactLeftYear: true };
+  }
+
   if (keptCitizenship(leftYear)) {
     return {
       ...elig,

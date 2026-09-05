@@ -274,8 +274,26 @@ ${cards || '<div class="e">אין שיחות עדיין.</div>'}
 app.get('/admin/transcripts', requireAdmin, (req, res) => {
   const all = storage.getAllConversations();
   const wanted = req.query.phone;
+
+  // ?today=1 → only conversations with activity since midnight, Israel time.
+  // ?days=3  → the last three days.
+  let since = 0;
+  if (req.query.today === '1') {
+    // Midnight in Israel, expressed as a real instant. Reading the local
+    // date parts and rebuilding the day is what keeps this correct when the
+    // server runs on UTC, as Railway does.
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: config.TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(new Date());                       // "2026-09-02"
+    since = new Date(`${parts}T00:00:00+03:00`).getTime();
+  } else if (req.query.days) {
+    since = Date.now() - parseInt(req.query.days, 10) * 86400000;
+  }
+
   const entries = Object.entries(all)
     .filter(([phone]) => !wanted || phone === wanted || phone.endsWith(wanted))
+    .filter(([, s]) => !since ||
+      new Date(s.profile?.lastInboundAt || s.startedAt || 0).getTime() >= since)
     .sort((a, b) =>
       new Date(b[1].profile?.lastInboundAt || 0) - new Date(a[1].profile?.lastInboundAt || 0));
 

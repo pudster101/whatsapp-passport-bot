@@ -32,7 +32,10 @@ const nextAction = require('./sales/nextAction');
 const handoff = require('./sales/handoff');
 const closing = require('./sales/closing');
 
-const MAX_HISTORY = 20;
+// A real conversation on 5 Sep ran past this and the transcript looked as if
+// it had been chopped into pieces. Postgres stores the session as JSONB, so a
+// longer history costs almost nothing and keeps the record whole.
+const MAX_HISTORY = 100;
 
 // ─── Rate limiting ────────────────────────────────────────────────────────────
 // In-memory sliding window per phone. Protects against floods and loops.
@@ -190,8 +193,35 @@ async function handleMessage(phone, message) {
       buttonId = message.interactive.list_reply?.id || '';
       text = message.interactive.list_reply?.title || '';
     }
+  } else if (['document', 'image', 'audio', 'video'].includes(msgType)) {
+    // A client sending documents is the highest-intent signal there is, and
+    // until 5 Sep we recorded it as the string "[document]" and dropped the
+    // file. Meta keeps inbound media for about 30 days; capture the id now so
+    // it can be fetched later, and say something human in the meantime.
+    const media = message[msgType] || {};
+    const filename = media.filename || media.caption || `${msgType}`;
+    profile.documents = profile.documents || [];
+    profile.documents.push({
+      mediaId: media.id || null,
+      type: msgType,
+      filename,
+      mime: media.mime_type || null,
+      caption: media.caption || null,
+      receivedAt: new Date().toISOString(),
+      messageId: message.id || null,
+    });
+    storage.logEvent(phone, 'document_received', {
+      mediaId: media.id, type: msgType, filename, mime: media.mime_type,
+    });
+    console.log(`📎 [${phone}] ${msgType} received — id=${media.id} name=${filename}`);
+    handoff.notifyAgents(
+      `📎 *${profile.name || '+' + phone}* שלח/ה ${msgType === 'document' ? 'מסמך' : 'תמונה'}: ${filename}\n\n` +
+      `להורדה: ${config.PUBLIC_URL}/admin/documents?token=***&phone=${phone}\n` +
+      `_וואטסאפ שומרת את הקובץ כ-30 יום._`
+    ).catch(e => console.warn('⚠️ document notify:', e.message));
+    text = `[${msgType === 'document' ? 'מסמך' : msgType === 'image' ? 'תמונה' : msgType}: ${filename}]`;
   } else {
-    // Media, audio, location, contacts, unsupported types
+    // Location, contacts, stickers, unsupported types
     text = `[${msgType}]`;
   }
 

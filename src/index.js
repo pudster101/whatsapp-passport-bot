@@ -186,6 +186,81 @@ app.get('/admin/conversations', requireAdmin, (req, res) => {
 });
 
 /**
+ * Documents customers have sent, and a way to actually open them.
+ *
+ *   /admin/documents?token=...            → everything received, newest first
+ *   /admin/documents?token=...&phone=972…  → one customer
+ *   /admin/media/<mediaId>?token=...       → downloads the file itself
+ *
+ * Meta holds inbound media for roughly 30 days. We store the id, not the bytes,
+ * and stream the file on demand — so this works within that window.
+ */
+app.get('/admin/documents', requireAdmin, (req, res) => {
+  const all = storage.getAllConversations();
+  const token = req.query.token || '';
+  const wanted = req.query.phone;
+  const rows = [];
+
+  for (const [phone, s] of Object.entries(all)) {
+    if (wanted && phone !== wanted && !phone.endsWith(wanted)) continue;
+    for (const d of (s.profile?.documents || [])) {
+      rows.push({ phone, name: s.profile?.name || null, ...d });
+    }
+  }
+  rows.sort((a, b) => new Date(b.receivedAt) - new Date(a.receivedAt));
+
+  if (req.query.format === 'json') return res.json(rows);
+
+  const esc = (t) => String(t == null ? '' : t)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const when = (d) => {
+    try { return new Date(d).toLocaleString('he-IL', { timeZone: config.TIMEZONE }); }
+    catch { return ''; }
+  };
+
+  const body = rows.length ? rows.map(r => `
+    <tr>
+      <td>${when(r.receivedAt)}</td>
+      <td>${esc(r.name || '+' + r.phone)}</td>
+      <td>${esc(r.filename)}</td>
+      <td>${esc(r.mime || r.type)}</td>
+      <td>${r.mediaId
+        ? `<a href="/admin/media/${encodeURIComponent(r.mediaId)}?token=${encodeURIComponent(token)}">הורדה</a>`
+        : '<span class="x">אין מזהה</span>'}</td>
+    </tr>`).join('') : '<tr><td colspan="5">לא התקבלו מסמכים.</td></tr>';
+
+  res.type('html').send(`<!doctype html><html lang="he" dir="rtl"><head>
+<meta charset="utf-8"><title>מסמכים שהתקבלו</title><style>
+body{font-family:system-ui,'Segoe UI',Arial;background:#0e1113;color:#e6e8ea;padding:20px}
+h1{font-size:18px}.sub{color:#8b949e;font-size:12px;margin-bottom:16px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:8px 10px;border-bottom:1px solid #21262d;text-align:right}
+th{color:#8b949e;font-weight:500}a{color:#58a6ff}.x{color:#6e7681}
+</style></head><body>
+<h1>מסמכים שהתקבלו</h1>
+<div class="sub">${rows.length} קבצים · וואטסאפ שומרת מדיה נכנסת כ-30 יום, אז כדאי להוריד מוקדם</div>
+<table><tr><th>מתי</th><th>מי</th><th>שם הקובץ</th><th>סוג</th><th></th></tr>${body}</table>
+</body></html>`);
+});
+
+/** Stream one file straight from Meta. */
+app.get('/admin/media/:id', requireAdmin, async (req, res) => {
+  try {
+    const meta = await wa.getMediaUrl(req.params.id);
+    const buf = await wa.downloadMedia(meta.url);
+    const ext = (meta.mime_type || '').split('/')[1] || 'bin';
+    res.set('Content-Type', meta.mime_type || 'application/octet-stream');
+    res.set('Content-Disposition', `attachment; filename="${req.params.id}.${ext}"`);
+    res.send(buf);
+  } catch (err) {
+    console.error('❌ media fetch failed:', err.message);
+    res.status(404).type('text/plain; charset=utf-8').send(
+      'לא ניתן להוריד את הקובץ. ייתכן שעברו יותר מ-30 יום מאז שנשלח, ואז וואטסאפ כבר מחקה אותו.'
+    );
+  }
+});
+
+/**
  * A live view of conversations happening right now.
  *
  * The transcripts endpoint is for reading afterwards; this one is for watching

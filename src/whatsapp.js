@@ -178,6 +178,32 @@ async function sendTemplate(to, templateName, params = []) {
 
 // ─── Misc ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Fetch the temporary download URL for an inbound media message.
+ *
+ * Meta keeps inbound media for about 30 days and serves it only to an
+ * authenticated request. Until 5 Sep the bot recorded a media message as the
+ * literal string "[document]" and never asked for the file — a client sent in
+ * her documents and nothing about them was kept.
+ */
+async function getMediaUrl(mediaId) {
+  const res = await axios.get(`https://graph.facebook.com/v18.0/${mediaId}`, {
+    headers: { Authorization: `Bearer ${config.WHATSAPP_TOKEN}` },
+    timeout: 15000,
+  });
+  return res.data; // { url, mime_type, sha256, file_size, id }
+}
+
+/** Download the bytes behind a media URL. Returns a Buffer. */
+async function downloadMedia(url) {
+  const res = await axios.get(url, {
+    headers: { Authorization: `Bearer ${config.WHATSAPP_TOKEN}` },
+    responseType: 'arraybuffer',
+    timeout: 60000,
+  });
+  return Buffer.from(res.data);
+}
+
 async function markRead(messageId) {
   try {
     await axios.post(BASE_URL, {
@@ -209,6 +235,8 @@ function splitMessage(text, maxLen = 900) {
 }
 
 module.exports = {
+  getMediaUrl,
+  downloadMedia,
   sendText,
   sendButtons,
   sendList,

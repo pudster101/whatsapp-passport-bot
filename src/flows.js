@@ -224,6 +224,27 @@ async function handleMessage(phone, message) {
       `_וואטסאפ שומרת את הקובץ כ-30 יום._`
     ).catch(e => console.warn('⚠️ document notify:', e.message));
     text = `[${msgType === 'document' ? 'מסמך' : msgType === 'image' ? 'תמונה' : msgType}: ${filename}]`;
+
+    // People send documents in a burst — five photos of one file arrive as five
+    // separate webhooks. On 6 Sep that produced six near-identical replies in
+    // seven seconds, and on 7 Sep six copies of "מצוין, רשמתי. 👍" in a row.
+    //
+    // So: acknowledge the first file, then stay quiet for a short window while
+    // the rest land. Every file is still recorded and every alert still sent —
+    // only the chatter is suppressed.
+    const now = Date.now();
+    const lastAck = session.lastMediaAckAt ? new Date(session.lastMediaAckAt).getTime() : 0;
+    const MEDIA_QUIET_MS = 45000;
+    if (now - lastAck < MEDIA_QUIET_MS) {
+      // Still record it in the transcript — the file is part of the story.
+      profile.lastInboundAt = new Date(now).toISOString();
+      profile.messageCount = (profile.messageCount || 0) + 1;
+      pushHistory(session, 'user', text);
+      console.log(`🤫 [${phone}] media burst — recorded, no reply`);
+      save(phone, session);
+      return;
+    }
+    session.lastMediaAckAt = new Date(now).toISOString();
   } else {
     // Location, contacts, stickers, unsupported types
     text = `[${msgType}]`;

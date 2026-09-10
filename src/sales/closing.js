@@ -130,7 +130,13 @@ function alreadyScheduled(text) {
     // a time. On 5 Sep the bot asked "מתי נוח לך?" three more times after
     // exactly that, and the lead had to repeat himself twice.
     /(?:היום|מחר|ביום\s+\S+|יום\s+(?:ראשון|שני|שלישי|רביעי|חמישי))\s*,?\s*(?:ב?בוקר|אחר\s+הצהריים|בערב)/.test(t) ||
-    /^\s*(?:ב?בוקר|אחר\s+הצהריים|בערב)\s*$/.test(t.trim())
+    // Bare answers to "בוקר או אחר הצהריים?" — including the way people
+    // actually type them. "אחהצ" and "בקר" both appeared in live chats.
+    /^\s*(?:ב?בוקר|בקר|אחר\s+הצהריים|אחה[״"']?צ|צהריים|בערב|ערב)\s*[.!]?\s*$/.test(t.trim()) ||
+    // "במשך היום", "מתי שנוח לך", "כל שעה" — a time WAS given, loosely.
+    // On 10 Sep a lead answered "במשך היום" and was asked twice more.
+    /(?:במשך|במהלך)\s+היום|כל\s+היום|כל\s+שעה|מתי\s+שנוח|לא\s+משנה\s+לי/.test(t) ||
+    /עדיפות\s+(?:ל?בוקר|ל?ערב|ל?צהריים)/.test(t)
   );
 }
 

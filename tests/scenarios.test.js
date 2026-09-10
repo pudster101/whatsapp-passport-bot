@@ -596,7 +596,7 @@ async function run() {
     // A Romanian birthplace records the territory but must NOT pick a route —
     // the year of departure decides between הסדרה and Article 10.
     check('Iași records territory, not an article',
-      p.eligibility.territory === 'romania_proper' && !p.eligibility.likelyArticle,
+      ['romania_proper', 'moldavia_ro'].includes(p.eligibility.territory) && !p.eligibility.likelyArticle,
       `article=${p.eligibility.likelyArticle} territory=${p.eligibility.territory}`);
 
     p = leadProfile.merge(p, { objections: [{ type: 'price_too_high' }] });

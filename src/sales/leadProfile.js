@@ -136,10 +136,20 @@ const TERRITORY_HINTS = [
   // A Romanian birthplace therefore sets no article at all.
   { match: /בסרביה|כישינב|קישינב|מולדובה|chisinau|basarabia/i,          territory: 'bessarabia',     article: '11' },
   { match: /בוקובינה|צ׳רנוביץ|צרנוביץ|צ'רנוביץ|chernivtsi|bukovina/i,  territory: 'bukovina',       article: '11' },
+  { match: /הרצה|herta|hertsa/i,                                        territory: 'hertsa',         article: '11' },
   { match: /טרנסילבניה|קלוז|ברשוב|סיביו|transylvania|cluj|brasov/i,     territory: 'transylvania',   article: null },
-  { match: /מרמורש|maramures|סיגט|sighet/i,                            territory: 'maramures',      article: null },
-  { match: /באנאט|banat|טימישוארה|timisoara/i,                         territory: 'banat',          article: null },
-  { match: /בוקרשט|יאשי|יאסי|גלאץ|קונסטנצה|bucharest|iasi|galati/i,     territory: 'romania_proper', article: null },
+  // Maramureș is in Romania. On 6 Sep the bot told a client that Vișeu de Sus
+  // is "Ukraine today" and therefore Article 11 — it is not, and the client
+  // was given the wrong route on the strength of it.
+  { match: /מרמורש|maramures|סיגט|sighet|וישו|viseu|בורשה|borsa/i,      territory: 'maramures',      article: null },
+  { match: /באנאט|banat|טימישוארה|timisoara|רשיצה|resita/i,             territory: 'banat',          article: null },
+  // Moldavia — the Romanian region, not the Republic of Moldova. Iași and
+  // Roman sit here, and both were called "areas that passed to Ukraine" in a
+  // live conversation on 7 Sep. They did not; they are in Romania.
+  { match: /יאשי|יאסי|iasi|רומן\b|roman\b|בקאו|bacau|פיאטרה|piatra|דורוחוי|dorohoi|בוטושאני|botosani|סוצ׳אבה|סוצאבה|suceava|וסלוי|vaslui|פוקשאני|focsani/i,
+    territory: 'moldavia_ro', article: null },
+  { match: /בוקרשט|bucharest|גלאץ|galati|קונסטנצה|constanta|פלוישט|ploiesti|קרייובה|craiova|בראילה|braila|אורדיה|oradea|ארד\b|arad/i,
+    territory: 'romania_proper', article: null },
 ];
 
 function deriveArticle(elig) {

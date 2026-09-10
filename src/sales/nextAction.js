@@ -28,8 +28,28 @@ const ACTIONS = {
  * Turn what the customer said ("סבתא שלי", "סבא שלי מצד אמא") into something
  * the bot can say about THEIR relative without sounding like it means its own.
  */
+/**
+ * The model sometimes fills the entity in English — "parent", "grandparents",
+ * even "self". That value went straight into the customer-facing question and
+ * produced "ומה שנת הלידה המשוערת של parent?" in four live conversations.
+ * Translate anything that comes back in English before it is ever spoken.
+ */
+const ANCESTOR_HE = {
+  parent: 'ההורה', mother: 'אמא', father: 'אבא',
+  grandparent: 'הסבא/סבתא', grandparents: 'הסבים',
+  grandmother: 'סבתא', grandfather: 'סבא',
+  'great-grandparent': 'הסב רבא', greatgrandparent: 'הסב רבא',
+  self: 'אתה', me: 'אתה', i: 'אתה',
+  sibling: 'האח/אחות', uncle: 'הדוד', aunt: 'הדודה',
+};
+
 function normaliseAncestor(raw) {
   if (!raw) return 'אותו בן משפחה';
+  const key = String(raw).trim().toLowerCase().replace(/[_\s]+/g, '');
+  if (ANCESTOR_HE[key]) return ANCESTOR_HE[key];
+  // Any leftover Latin-only value is a placeholder, not something to say aloud.
+  if (/^[a-z\s'-]+$/i.test(String(raw).trim())) return 'אותו בן משפחה';
+
   let s = String(raw).trim()
     .replace(/\s*של[יוה]\b/g, '')      // שלי / שלו / שלה
     .replace(/\s*שלכם?\b/g, '')

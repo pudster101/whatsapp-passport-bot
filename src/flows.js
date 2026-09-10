@@ -216,7 +216,11 @@ async function handleMessage(phone, message) {
     console.log(`📎 [${phone}] ${msgType} received — id=${media.id} name=${filename}`);
     handoff.notifyAgents(
       `📎 *${profile.name || '+' + phone}* שלח/ה ${msgType === 'document' ? 'מסמך' : 'תמונה'}: ${filename}\n\n` +
-      `להורדה: ${config.PUBLIC_URL}/admin/documents?token=***&phone=${phone}\n` +
+      // The alert already carries the client's name and number, so a working
+      // link is not the weakest link here — and a masked one is just useless.
+      (config.ADMIN_TOKEN
+        ? `להורדה: ${config.PUBLIC_URL}/admin/documents?token=${encodeURIComponent(config.ADMIN_TOKEN)}&phone=${phone}\n`
+        : `להורדה: ${config.PUBLIC_URL}/admin/documents (דרוש ADMIN_TOKEN)\n`) +
       `_וואטסאפ שומרת את הקובץ כ-30 יום._`
     ).catch(e => console.warn('⚠️ document notify:', e.message));
     text = `[${msgType === 'document' ? 'מסמך' : msgType === 'image' ? 'תמונה' : msgType}: ${filename}]`;

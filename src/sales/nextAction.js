@@ -69,6 +69,12 @@ function decide({ analysis, profile, text, recentClose = false }) {
   const score = profile.buyingIntent || 0;
   const missing = leadProfile.missingFacts(profile);
   const contactAttempts = profile.contactAsks || 0;
+  // A lead who volunteered a name and nothing else. Two of those on 8 Sep —
+  // שמשון לזר and מרקוביץ ליאת — gave their name, were never asked for a
+  // number, and were never reachable again. A name without a number is not a
+  // contact detail; it is a lead we can watch leave.
+  const needsPhone = !!profile.name && !profile.clientPhone
+                     && !(profile.contactRefusals > 0);
 
   // 1. Explicit human request or AI escalation — always wins
   if (intent === 'request_human' || analysis?.escalate) {
@@ -174,8 +180,8 @@ function decide({ analysis, profile, text, recentClose = false }) {
   const faqKey = faq.BY_INTENT[intent];
   if (faqKey) {
     const isQualified = leadProfile.isQualified(profile);
-    const wantsContact =
-      score >= config.HOT_LEAD_THRESHOLD && !leadProfile.hasContactDetails(profile);
+    const wantsContact = !leadProfile.hasContactDetails(profile)
+      && (score >= config.HOT_LEAD_THRESHOLD || needsPhone);
 
     return {
       action: ACTIONS.ANSWER_QUESTION,
@@ -185,7 +191,9 @@ function decide({ analysis, profile, text, recentClose = false }) {
           ? 'ענה על השאלה וקשר אותה למקרה הספציפי שלו לפי מה שכבר ידוע עליו.'
           : 'ענה על השאלה בקצרה ולעניין.') +
         (wantsContact
-          ? ' הלקוח מגלה עניין אמיתי — אחרי התשובה הוסף משפט קצר אחד שמזמין אותו להשאיר פרטים לשיחת ייעוץ. אל תוותר על התשובה לטובת הבקשה.'
+          ? (needsPhone
+              ? ' יש לנו את שמו אבל אין מספר. אחרי התשובה הוסף משפט קצר אחד שמבקש *מספר טלפון* לחזרה — לא "פרטים" ולא מייל. אל תוותר על התשובה לטובת הבקשה.'
+              : ' הלקוח מגלה עניין אמיתי — אחרי התשובה הוסף משפט קצר אחד שמזמין אותו להשאיר פרטים לשיחת ייעוץ. אל תוותר על התשובה לטובת הבקשה.')
           : ' אם זה מתאים לרגע, סיים בשאלה אחת שמקדמת.'),
       fallbackText: faq.get(faqKey),
       appendContactAsk: wantsContact,
@@ -225,6 +233,24 @@ function decide({ analysis, profile, text, recentClose = false }) {
         : (!profile.name
             ? `נשמע שזה בהחלט רלוונטי עבורך. 😊\n\nכדי שעו״ד פודים יחזור אליך — *מה שמך המלא?*`
             : `מעולה. *ומה מספר הטלפון שלך לחזרה?*`),
+      escalate: false,
+      contactAsk: true,
+    };
+  }
+
+  // 6b. We have a name and no number, at any score. Giving a name IS the buying
+  //     signal — nobody types their full name to a bot they intend to ignore.
+  //     The 70-point threshold above never fires for these leads, which is
+  //     precisely why two of them walked away unasked.
+  if (needsPhone && !recentClose && contactAttempts < 3) {
+    return {
+      action: ACTIONS.REQUEST_CONTACT,
+      reason: 'name known, phone missing',
+      directive:
+        `יש לנו את שמו (${profile.name}) אבל אין מספר טלפון. ` +
+        'בקש *מספר טלפון* — במשפט אחד, בטבעיות, ובלי לחזור על ניסוח שכבר השתמשת בו. ' +
+        'אל תבקש מייל במקום, ואל תסתפק בשם.',
+      fallbackText: closing.nextContactAsk(profile, { seed: contactAttempts }),
       escalate: false,
       contactAsk: true,
     };

@@ -248,6 +248,35 @@ function contactLadder(profile = {}, attempt = 0) {
          `כשתרצה — *${OFFICE_PHONE}* · ${HOURS}. תבקש את עו״ד פודים ישירות.`;
 }
 
+/**
+ * The next contact ask, chosen by what the lead actually did.
+ *
+ * contactLadder() steps down the ask on every call, which is right after a
+ * REFUSAL and wrong everywhere else. The repetition guard in flows.js used to
+ * call it with attempt=2 — the email rung — whenever a question was reworded
+ * twice. That is how a 100-score lead on 7 Sep (a four-person file, asked what
+ * it costs) was answered and then handed an email address out of nowhere, with
+ * nobody ever asking for his number. Four people, no phone, gone.
+ *
+ * A lead who has not refused anything is still owed the phone ask — worded
+ * differently each time, never the same sentence twice.
+ */
+const PHONE_ASK_VARIANTS = [
+  p => `כדי שעו״ד פודים יחזור אליך — *מה מספר הטלפון, ומתי נוח: ${timeOptions()}?*`,
+  p => `${p.name ? `${p.name}, ` : ''}הכי מהיר לסגור את זה בשיחה קצרה. ` +
+       `*תשאיר מספר ועו״ד פודים יחזור אליך*, או תתקשר ישירות: *${OFFICE_PHONE}* · ${HOURS}.`,
+  p => `אני יכול להעביר את מה שסיכמנו כאן לעו״ד פודים — *לאיזה מספר שיחזור אליך?*`,
+];
+
+function nextContactAsk(profile = {}, opts = {}) {
+  const refusals = profile.contactRefusals || 0;
+  // Only a real refusal steps the ladder down.
+  if (refusals > 0) return contactLadder(profile, refusals);
+  if (profile.clientPhone) return callClose(profile, { variant: 'ask_time', seed: opts.seed || 0 });
+  const i = (opts.seed || 0) % PHONE_ASK_VARIANTS.length;
+  return PHONE_ASK_VARIANTS[i](profile);
+}
+
 /** Only unambiguous goodbyes. Comparing firms is not leaving. */
 const ENDING_PATTERNS = [
   /^\s*(תודה|ביי|להתראות)\s*[!.]?\s*$/,
@@ -270,6 +299,7 @@ module.exports = {
   stripTrailingAsk,
   signalsEnding,
   contactLadder,
+  nextContactAsk,
   signalsNoPush,
   signalsContactRefusal,
   softNudge,

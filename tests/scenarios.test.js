@@ -43,6 +43,8 @@ const scoring = require('../src/sales/scoring');
 const objections = require('../src/sales/objections');
 const stages = require('../src/sales/stages');
 const brain = require('../src/ai/brain');
+const closing = require('../src/sales/closing');
+const nextAction = require('../src/sales/nextAction');
 
 // ─── Tiny test harness ────────────────────────────────────────────────────────
 let passed = 0, failed = 0;
@@ -543,6 +545,23 @@ async function run() {
     check('still blocks an unlisted shekel amount',
       brain.enforceGuardrails('שכר הטרחה שלנו 9,500 ₪') === null);
     check('allows normal copy', brain.enforceGuardrails('נשמח לחזור אליך לשיחת ייעוץ') !== null);
+
+    // Response-time promises — Tal Yehoshua, 9 Sep: promised "דקות ספורות",
+    // waited 35 minutes, deadline passed.
+    check('blocks "דקות ספורות"',
+      brain.enforceGuardrails('עו״ד פודים יחזור אליך תוך דקות ספורות') === null);
+    check('blocks "בשעה הקרובה"',
+      brain.enforceGuardrails('מישהו מהמשרד יתקשר אליך בשעה הקרובה') === null);
+    check('blocks "מיד" + callback',
+      brain.enforceGuardrails('אני מעביר את זה עכשיו ומיד נחזור אליך') === null);
+    check('blocks "תוך שעה"',
+      brain.enforceGuardrails('תקבל תשובה תוך שעה') === null);
+    check('allows offering time slots as a question',
+      brain.enforceGuardrails('מתי נוח שעו״ד פודים יחזור אליך — היום אחר הצהריים או מחר בבוקר?') !== null);
+    check('allows the length of the consultation itself',
+      brain.enforceGuardrails('שיחת הייעוץ אורכת כ-15 דקות, ללא עלות') !== null);
+    check('allows the office number without a clock',
+      brain.enforceGuardrails('אפשר גם להתקשר ישירות: 03-5517801 · א׳–ה׳ 09:00–18:00') !== null);
   }
 
   // ── 19. Hebrew morphology (the old matcher\'s blind spot) ──────────────────
@@ -603,6 +622,88 @@ async function run() {
     p = leadProfile.merge(p, { objections: [{ type: 'price_too_high', resolved: true }] });
     check('objections deduplicate', p.objections.length === 1);
     check('objection resolution is recorded', p.objections[0].resolved === true);
+  }
+
+  // ── 23. A name is not a contact detail ─────────────────────────────────────
+  //     8 Sep: שמשון לזר and מרקוביץ ליאת each gave a name, were never asked
+  //     for a number, and were never reachable again.
+  section('23. Phone collection when only a name is known');
+  {
+    const named = () => {
+      const p = leadProfile.create('972500000003');
+      p.name = 'שמשון לזר';
+      p.messageCount = 4;
+      p.motivation = 'דרכון לילדים';
+      return p;
+    };
+
+    const d = nextAction.decide({
+      analysis: { intent: 'unclear' }, profile: named(), text: 'שמשון לזר',
+    });
+    check('a name with no number triggers a contact request',
+      d.action === 'request_contact', `action=${d.action}`);
+    check('and the ask is for a phone number, not "פרטים"',
+      /טלפון|מספר/.test(d.fallbackText || ''), d.fallbackText);
+
+    // A cold score must not suppress it — this is the exact hole the two lost
+    // leads fell through: score 0, threshold 70, nobody ever asked.
+    const cold = named();
+    cold.buyingIntent = 0;
+    check('a cold score does not suppress the ask',
+      nextAction.decide({ analysis: { intent: 'unclear' }, profile: cold, text: 'אוקיי' })
+        .action === 'request_contact');
+
+    // A direct question is still answered — with the phone ask appended.
+    const asked = nextAction.decide({
+      analysis: { intent: 'ask_cost' }, profile: named(), text: 'כמה זה עולה?',
+    });
+    check('a direct question is still answered first',
+      asked.action === 'answer_question', `action=${asked.action}`);
+    check('and the phone ask rides along with the answer',
+      asked.appendContactAsk === true);
+
+    // Once we have the number, stop asking.
+    const withPhone = named();
+    withPhone.clientPhone = '0521234567';
+    check('having the number ends the asking',
+      nextAction.decide({ analysis: { intent: 'unclear' }, profile: withPhone, text: 'תודה רבה' })
+        .action !== 'request_contact');
+
+    // A bare name, typed as the answer to "מה שמך המלא?", must be recognised —
+    // otherwise the bot asks for the name again and never reaches the number.
+    const asked_name = { history: [{ role: 'assistant', text: 'כדי שנחזור אליך — *מה שמך המלא?*' }] };
+    const blank = () => leadProfile.create('972500000004');
+    check('a bare name after a name question is captured',
+      flows.ruleBasedAnalysis('שמשון לזר', blank(), asked_name).profileUpdates.name === 'שמשון לזר');
+    check('a one-word name is captured too',
+      flows.ruleBasedAnalysis('ליאת', blank(), asked_name).profileUpdates.name === 'ליאת');
+    check('"כן" is not a name',
+      !flows.ruleBasedAnalysis('כן', blank(), asked_name).profileUpdates.name);
+    check('a phone number is not a name',
+      !flows.ruleBasedAnalysis('0521234567', blank(), asked_name).profileUpdates.name);
+    check('a bare word with no name question is not a name',
+      !flows.ruleBasedAnalysis('שמשון לזר', blank(),
+        { history: [{ role: 'assistant', text: 'באיזו שנה עלתה סבתא לישראל?' }] })
+        .profileUpdates.name);
+    check('a known name is never overwritten', (() => {
+      const p = blank(); p.name = 'דנה';
+      return !flows.ruleBasedAnalysis('משהו אחר', p, asked_name).profileUpdates.name;
+    })());
+
+    // The ladder steps down only after a real refusal — never because a
+    // question was reworded. The 100-score four-person file on 7 Sep was
+    // handed an email address without ever being asked for a number.
+    const fresh = named();
+    check('no refusal → still the phone ask',
+      /טלפון|מספר/.test(closing.nextContactAsk(fresh, { seed: 1 })));
+    check('no refusal → not an email offer',
+      !/מייל|info@/.test(closing.nextContactAsk(fresh, { seed: 1 })));
+    const refused = named();
+    refused.contactRefusals = 2;
+    check('after refusals the ladder does step down',
+      /מייל|info@/.test(closing.nextContactAsk(refused)));
+    check('phone-ask wording varies between turns',
+      closing.nextContactAsk(fresh, { seed: 0 }) !== closing.nextContactAsk(fresh, { seed: 1 }));
   }
 
   // ── Summary ────────────────────────────────────────────────────────────────

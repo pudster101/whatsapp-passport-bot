@@ -403,6 +403,30 @@ const PROMISE_PATTERNS = [
 ];
 
 /**
+ * Response-time promises.
+ *
+ * On 9 Sep the bot told Tal Yehoshua that the office would come back to him
+ * "תוך דקות ספורות". Nobody was watching the queue, he waited 35 minutes, and
+ * his own deadline passed while he waited. The bot does not control when a
+ * human picks the conversation up, so it may never put a clock on it.
+ *
+ * Blocked only when a callback verb and a short window sit in the SAME
+ * sentence. Offering the customer a slot ("היום אחה״צ או מחר בבוקר — מה נוח?")
+ * is a question, not a promise, and stays allowed; so does the length of the
+ * consultation itself ("שיחה של 15 דקות").
+ */
+const CALLBACK_VERB =
+  /(?:יחזור|יחזרו|נחזור|אחזור|יתקשר|נתקשר|אתקשר|יצור\s+קשר|ניצור\s+קשר|נהיה\s+בקשר|תקבל[י]?\s+(?:שיחה|תשובה|מענה)|אעביר|מעביר)/;
+const SOON_WINDOW =
+  /(?:דקות\s+ספורות|תוך\s+(?:כמה\s+)?(?:דקה|דקות|רגע|רגעים|שעה|שעתיים|שעות)|תוך\s+\d+\s*(?:דקות|שעות)|ב(?:דקות|רגעים|שעה)\s+ה?קרוב(?:ות|ה|ים)|עוד\s+(?:כמה\s+)?(?:דקות|רגע|רגעים)|ממש\s+עוד\s+מעט|מיד[י]?\s|תכף)/;
+
+function promisesResponseTime(text) {
+  return String(text)
+    .split(/[.!?\n•]+/)
+    .some(s => CALLBACK_VERB.test(s) && SOON_WINDOW.test(s));
+}
+
+/**
  * Official, published third-party charges the bot MAY state. These are
  * government and institution fees, not the firm's professional fees.
  * Anything not on this list is treated as a fee quote and blocked.
@@ -508,6 +532,11 @@ function enforceGuardrails(text, profile = null) {
       console.warn('🛑 Guardrail: outcome promise in AI reply');
       return null;
     }
+  }
+  // A clock on a human we do not control.
+  if (promisesResponseTime(text)) {
+    console.warn('🛑 Guardrail: promised a response time the office does not control');
+    return null;
   }
   // A duration attached to this lead's own case — not a general corpus fact.
   if (CASE_SCOPED.test(text) && DURATION.test(text)) {

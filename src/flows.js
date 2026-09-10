@@ -536,7 +536,7 @@ async function handleFreeText(phone, session, text, opts = {}) {
   //      • when the rules are unsure what was said
   //      • when an objection is on the table and nuance matters
   //    Otherwise the rule-based read is good enough, and we save a round trip.
-  let analysis = ruleBasedAnalysis(text, profile);
+  let analysis = ruleBasedAnalysis(text, profile, session);
 
   const needsDeepRead =
     (profile.messageCount || 0) <= 2 ||
@@ -985,6 +985,31 @@ const INTENT_PHRASES = [
 
 const ANCESTOR_RE = /(סבתא רבתא|סבא רבא|סבתא|סבתי|סבא|סבי|אמא|אימא|אבא|אבי|אמי|הורה|דודה|דוד)(\s*(?:שלי|מצד\s*(?:אמא|אבא|אמי|אבי|האם|האב)))?/;
 const NAME_RE = /(?:קוראים לי|שמי|השם שלי|אני נקרא(?:ת)?)\s+([֐-׿]+(?:\s+[֐-׿]+)?)/;
+
+/**
+ * A bare name, given as the answer to the question we just asked.
+ *
+ * NAME_RE only ever caught "קוראים לי X". A lead who is asked "מה שמך המלא?"
+ * and types "שמשון לזר" was not recognised at all — so the bot asked for the
+ * name again on the next turn, and never got as far as asking for a number.
+ * Two leads on 8 Sep ended exactly there.
+ */
+const NAME_ASK_RE = /(מה שמך|שמך המלא|איך קוראים לך|מה השם שלך|איך לפנות אליך)/;
+const BARE_NAME_RE = /^[֐-׿A-Za-z]{2,}(?:[\s'׳"״-]+[֐-׿A-Za-z]{2,}){0,2}$/;
+/** Short replies that are answers to something else, never a name. */
+const NOT_A_NAME = new Set([
+  'כן', 'לא', 'תודה', 'אוקיי', 'אוקי', 'בסדר', 'סבבה', 'מעולה', 'היי', 'שלום',
+  'אהלן', 'בוקר טוב', 'ערב טוב', 'למה', 'מה', 'איך', 'כמה', 'מתי', 'רגע',
+  'סבתא', 'סבא', 'אמא', 'אבא', 'הורה', 'אני', 'רומניה', 'דרכון', 'אזרחות',
+  'לא יודע', 'לא יודעת', 'לא בטוח', 'אולי', 'בטח', 'נשמע טוב',
+]);
+
+function looksLikeBareName(text) {
+  const t = String(text).trim();
+  if (!t || t.length > 30 || /\d|[?@]/.test(t)) return false;
+  if (NOT_A_NAME.has(t.replace(/[.!]/g, ''))) return false;
+  return BARE_NAME_RE.test(t);
+}
 const PHONE_RE = /(?:\+?972|0)5\d[\s-]?\d{3}[\s-]?\d{4}/;
 const YEAR_RE = /\b(1[89]\d{2}|20[0-2]\d)\b/g;
 
@@ -993,7 +1018,7 @@ const YEAR_RE = /\b(1[89]\d{2}|20[0-2]\d)\b/g;
  * the AI is off, erroring, or unconfident. Deliberately more capable than a
  * keyword list: Hebrew-prefix aware, and it extracts real facts.
  */
-function ruleBasedAnalysis(text, profile) {
+function ruleBasedAnalysis(text, profile, session = null) {
   const lower = String(text).toLowerCase();
   const has = p => scoring.hasPhrase(lower, p.toLowerCase());
 
@@ -1020,6 +1045,16 @@ function ruleBasedAnalysis(text, profile) {
   const place = leadProfile.detectPlace(text);
   const ancestorMatch = text.match(ANCESTOR_RE);
   const nameMatch = text.match(NAME_RE);
+
+  // Did we just ask for a name, and is this a plausible answer to that?
+  let bareName = null;
+  if (!profile.name && !nameMatch && intent === 'unclear' && !detected.length) {
+    const lastBot = [...(session?.history || [])].reverse()
+      .find(m => m.role === 'assistant');
+    if (lastBot && NAME_ASK_RE.test(lastBot.text || '') && looksLikeBareName(text)) {
+      bareName = String(text).trim();
+    }
+  }
   const phoneMatch = text.match(PHONE_RE)?.[0] || null;
 
   // Deciding whether a year is a BIRTH year or an EMIGRATION year matters a
@@ -1067,7 +1102,7 @@ function ruleBasedAnalysis(text, profile) {
   };
 
   const extractedAnything =
-    Object.values(eligibility).some(Boolean) || nameMatch || phoneMatch;
+    Object.values(eligibility).some(Boolean) || nameMatch || bareName || phoneMatch;
 
   // ─── Stage ──────────────────────────────────────────────────────────────
   let stage = profile.stage;
@@ -1100,7 +1135,7 @@ function ruleBasedAnalysis(text, profile) {
     confidence,
     summary: profile.conversationSummary || '',
     profileUpdates: {
-      name: !profile.name && nameMatch ? nameMatch[1].trim() : null,
+      name: !profile.name ? (nameMatch ? nameMatch[1].trim() : bareName) : null,
       clientPhone: phoneMatch ? phoneMatch.replace(/[\s-]/g, '') : null,
       eligibility,
     },
@@ -1194,14 +1229,14 @@ function avoidRepetition(session, text) {
         const alt = REPEAT_ALTERNATIVES[(session.repeatedAsk - 1) % REPEAT_ALTERNATIVES.length];
         if (session.repeatedAsk >= 3) {
           session.repeatedAsk = 0;
-          return closing.contactLadder(session.profile, 2);
+          return closing.nextContactAsk(session.profile, { seed: session.repeatedAsk + 2 });
         }
         return alt;
       }
 
       if (session.repeatedAsk >= 2) {
         session.repeatedAsk = 0;
-        return `${body}\n\n${closing.contactLadder(session.profile, 2)}`.trim();
+        return `${body}\n\n${closing.nextContactAsk(session.profile, { seed: 1 })}`.trim();
       }
       return body;
     }

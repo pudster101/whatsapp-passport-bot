@@ -39,6 +39,7 @@ function create(phone, extra = {}) {
 
     stage: 'NEW_LEAD',
     buyingIntent: 0,
+    openingVariant: null,       // A | B — which opening message this lead saw
     conversationSummary: '',
     questionsAsked: [],           // topics the customer raised — never re-ask
 

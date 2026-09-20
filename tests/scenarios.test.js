@@ -740,6 +740,58 @@ async function run() {
       `${w.totals.diedAtFirstMessage} → ${w2.totals.diedAtFirstMessage}`);
   }
 
+  // ── 25. The opening-message experiment ─────────────────────────────────────
+  section('25. Opening-message A/B');
+  {
+    const experiment = require('../src/sales/experiment');
+
+    check('assignment is stable for the same number',
+      experiment.assign('972501111111') === experiment.assign('972501111111'));
+    check('assignment only ever returns a known variant',
+      ['A', 'B'].includes(experiment.assign('972502222222')));
+    check('a missing number does not throw and falls back to control',
+      experiment.assign(undefined) === 'A' && experiment.assign('') === 'A');
+
+    // Uniformity: a 45/55 split over 10k numbers would still be fine, but a
+    // hash that leans harder than that would quietly bias the experiment.
+    const counts = { A: 0, B: 0 };
+    for (let i = 0; i < 10000; i++) counts[experiment.assign('97250' + i)]++;
+    const share = counts.A / (counts.A + counts.B);
+    check('the split is even to within 2 points', Math.abs(share - 0.5) < 0.02,
+      `A=${counts.A} B=${counts.B}`);
+
+    check('both variants have an opening and they differ',
+      experiment.opening('A') && experiment.opening('B')
+      && experiment.opening('A') !== experiment.opening('B'));
+    check('an unknown variant falls back to the control copy',
+      experiment.opening('Z') === experiment.opening('A'));
+
+    // Compliance — CL-004 is a possibility, never a determination, and no
+    // response time may be promised.
+    const b = experiment.opening('B');
+    check('the challenger hedges eligibility', b.includes('עשוי'));
+    check('the challenger includes the third degree', b.includes('סבא-רבא'));
+    check('the challenger offers a safe answer', b.includes('לא בטוח'));
+    check('no variant promises a response time',
+      !/דקות ספורות|תוך .* דקות|מיד חוזר/.test(experiment.opening('A') + b));
+
+    // A greeted lead carries its variant, and the variant matches the pure
+    // function — this is what the rollup groups by.
+    const phone = '972500000077';
+    await say(phone, 'היי');
+    const prof = require('../src/storage').getConversation(phone)?.profile;
+    check('a greeted lead is stamped with a variant',
+      prof && ['A', 'B'].includes(prof.openingVariant), String(prof?.openingVariant));
+    check('the stamp matches the pure assignment',
+      prof?.openingVariant === experiment.assign(phone));
+
+    const w = await dashboard.weekly(7);
+    check('the weekly page reports the experiment', Array.isArray(w.byVariant));
+    check('every variant row is internally consistent',
+      w.byVariant.every(v => v.died <= v.mature && v.mature <= v.conversations
+                             && v.leadsCaptured <= v.conversations));
+  }
+
   // ── Summary ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(52)}`);
   console.log(`\x1b[1mResults: ${passed} passed, ${failed} failed\x1b[0m`);

@@ -260,10 +260,41 @@ async function weekly(days = 7) {
     }
   }
 
+  // ─── The opening-message experiment ──────────────────────────────
+  // Counted from SESSIONS, not from events. conversation_started is
+  // under-counted (4 events against 63 live conversations on 20 Sep), which is
+  // what makes overview.conversionRate report 400%. Sessions are the sound
+  // source, and the decision rule below rests on them.
+  const variants = {};
+  for (const session of Object.values(conversations)) {
+    const p = session?.profile;
+    if (!p || !p.openingVariant) continue;
+    const opened = new Date(p.firstSeenAt || session.startedAt || 0).getTime();
+    if (!opened || opened < sinceMs) continue;
+    const v = variants[p.openingVariant] || (variants[p.openingVariant] = {
+      variant: p.openingVariant, conversations: 0, died: 0, leadsCaptured: 0, mature: 0,
+    });
+    v.conversations++;
+    if (session.leadSaved) v.leadsCaptured++;
+    // Only a lead past the grace window can be called dead either way.
+    if (Date.now() - opened >= graceMs) {
+      v.mature++;
+      if ((p.messageCount || 0) <= 1) v.died++;
+    }
+  }
+
+  const byVariant = Object.values(variants).map(v => ({
+    ...v,
+    diedShare: v.mature ? Math.round((v.died / v.mature) * 100) : null,
+    captureRate: v.conversations
+      ? Math.round((v.leadsCaptured / v.conversations) * 100) : null,
+  })).sort((a, b) => a.variant.localeCompare(b.variant));
+
   return {
     periodDays: days,
     generatedAt: new Date().toISOString(),
     days: rows,
+    byVariant,
     totals: {
       started,
       captured,

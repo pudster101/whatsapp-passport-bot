@@ -270,6 +270,24 @@ a{color:#58a6ff;text-decoration:none;font-size:12px}
 <div class="note">"מת בהודעה הראשונה" = הליד כתב פעם אחת, קיבל תשובה, ומעולם לא ענה שוב.
 זו הנקודה עם המנוף הגדול ביותר: כל אחד כזה הוא קליק ששולם עליו ונעצר בשאלה הראשונה.</div>
 
+${data.byVariant && data.byVariant.length ? `
+<h2>מבחן הודעת הפתיחה</h2>
+<table>
+  <tr><th>גרסה</th><th class="num">שיחות</th><th class="num">בשלות</th><th class="num">מתו בהודעה הראשונה</th><th class="num">%</th><th class="num">נלכדו</th><th class="num">% לכידה</th></tr>
+  ${data.byVariant.map(v => `<tr>
+    <td class="day">${esc(v.variant)}${v.variant === 'A' ? ' (בקרה)' : ''}</td>
+    <td class="num">${v.conversations}</td>
+    <td class="num">${v.mature}</td>
+    <td class="num warn">${v.died}</td>
+    <td class="num warn">${pct(v.diedShare)}</td>
+    <td class="num ok">${v.leadsCaptured}</td>
+    <td class="num ok">${pct(v.captureRate)}</td>
+  </tr>`).join('')}
+</table>
+<div class="note">השער נקבע מראש: ירידה של 10 נקודות אחוז או יותר בעמודה «מתו בהודעה הראשונה», על מינימום 25 שיחות בשלות בכל גרסה.
+פחות מזה — לא הוכרע, והבקרה נשארת. הספירה מבוססת על שיחות, לא על אירועים.</div>
+` : ''}
+
 <h2>לידים חמים שעדיין לא טופלו</h2>
 <table>
   <tr><th>ליד</th><th class="num">ניקוד</th><th>שלב</th><th class="num">שקט</th><th>טלפון</th><th></th></tr>

@@ -26,6 +26,7 @@ const faq = require('./kb/faq');
 const retrieve = require('./kb/retrieve');
 const leadProfile = require('./sales/leadProfile');
 const stages = require('./sales/stages');
+const experiment = require('./sales/experiment');
 const scoring = require('./sales/scoring');
 const objections = require('./sales/objections');
 const nextAction = require('./sales/nextAction');
@@ -412,11 +413,16 @@ async function handleStart(phone, session, opts = {}) {
   //
   // So: one line of who we are, and one concrete question they can answer from
   // memory. The menu still exists behind the word "תפריט" for anyone who wants it.
+  //
+  // The opening is under test — see src/sales/experiment.js. The variant is a
+  // pure function of the phone number and is recorded on the profile the first
+  // time we greet, so a returning lead never flips and the rollup can group by
+  // it. Only the first-contact opening varies; the returning greeting does not.
   const returning = (profile.messageCount || 0) > 1 && profile.name;
+  if (!profile.openingVariant) profile.openingVariant = experiment.assign(phone);
   const welcome = returning
     ? `היי ${profile.name}! 👋 טוב לשמוע ממך שוב.\n\nבמה אוכל לעזור הפעם?`
-    : `היי! 👋 הגעת למשרד עו״ד יהונתן פודים — *השער שלך לרומניה*.\n\n` +
-      `בוא נראה מה המצב שלך. *מי במשפחה נולד ברומניה?* (הורה / סב / סבתא)`;
+    : experiment.opening(profile.openingVariant);
 
   await reply(phone, session, welcome);
   save(phone, session);

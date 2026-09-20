@@ -164,6 +164,128 @@ app.get('/admin/dashboard', requireAdmin, async (req, res) => {
   }
 });
 
+/**
+ * The week on one page.
+ *
+ *   /admin/weekly?token=...            → the last 7 days, readable
+ *   /admin/weekly?token=...&days=14    → a longer window
+ *   /admin/weekly?token=...&format=json
+ *
+ * Built around the number the 7 Sep review surfaced and nothing else shows:
+ * how many leads never wrote a second message.
+ */
+const INTENT_HE = {
+  ask_eligibility: 'זכאות', ask_process: 'התהליך', ask_time: 'כמה זמן',
+  ask_cost: 'עלות', ask_documents: 'מסמכים', ask_legality: 'חוקיות',
+  ask_benefits: 'מה זה נותן', ask_children: 'ילדים', ask_travel: 'נסיעות',
+  ask_b1: 'בחינת B1', ask_b1_course: 'קורס רומנית', ask_trust: 'למה אתם',
+  request_human: 'ביקש נציג', ready_to_start: 'מוכן להתחיל',
+};
+
+app.get('/admin/weekly', requireAdmin, async (req, res) => {
+  try {
+    const asked = parseInt(req.query.days, 10);
+    const days = Number.isFinite(asked) ? Math.min(90, Math.max(1, asked)) : 7;
+    const data = await dashboard.weekly(days);
+    if (req.query.format === 'json') return res.json(data);
+
+    const token = req.query.token || '';
+    const esc = (t) => String(t == null ? '' : t)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const pct = (n) => (n === null ? '—' : `${n}%`);
+    const t = data.totals;
+
+    // The daily bars are drawn against the busiest day, so a quiet week still
+    // has shape instead of a row of slivers.
+    const peak = Math.max(1, ...data.days.map(d => d.started));
+    const rows = data.days.map(d => `
+      <tr>
+        <td class="day">${esc(d.label)}</td>
+        <td class="num">${d.started}</td>
+        <td class="bar"><span style="width:${Math.round((d.started / peak) * 100)}%"></span></td>
+        <td class="num ok">${d.captured}</td>
+        <td class="num">${pct(d.conversionRate)}</td>
+        <td class="num warn">${d.died || '—'}</td>
+      </tr>`).join('');
+
+    const hot = data.unhandledHot.map(l => `
+      <tr>
+        <td>${esc(l.name || '+' + l.phone)}</td>
+        <td class="num">${l.score}</td>
+        <td>${esc(l.stage)}</td>
+        <td class="num">${l.hoursIdle === null ? '—' : `${l.hoursIdle} ש׳`}</td>
+        <td>${esc(l.clientPhone || '')}</td>
+        <td><a href="/admin/transcripts?token=${encodeURIComponent(token)}&phone=${encodeURIComponent(l.phone)}">תמליל ←</a></td>
+      </tr>`).join('');
+
+    const list = (items, label) => items.length
+      ? items.map(i => `<li><span>${esc(label(i))}</span><b>${i.count}</b></li>`).join('')
+      : '<li class="e">אין נתונים</li>';
+
+    res.type('html').send(`<!doctype html><html lang="he" dir="rtl"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>סיכום ${days} ימים</title><style>
+body{font-family:system-ui,'Segoe UI',Arial;background:#0e1113;color:#e6e8ea;margin:0;padding:16px;max-width:900px}
+h1{font-size:18px;margin:0 0 4px}h2{font-size:14px;margin:24px 0 8px;color:#8b949e;font-weight:600}
+.sub{color:#8b949e;font-size:12px;margin-bottom:18px}
+.cards{display:flex;gap:10px;flex-wrap:wrap}
+.k{background:#161b22;border:1px solid #21262d;border-radius:10px;padding:12px 14px;flex:1;min-width:130px}
+.k b{display:block;font-size:24px;line-height:1.2}
+.k span{color:#8b949e;font-size:11px}
+.k.warn{border-color:#9e6a03}.k.warn b{color:#e3b341}
+.k.ok b{color:#3fb950}
+table{width:100%;border-collapse:collapse;font-size:13px;background:#161b22;border:1px solid #21262d;border-radius:10px;overflow:hidden}
+th{text-align:right;color:#8b949e;font-weight:600;font-size:11px;padding:8px 10px;border-bottom:1px solid #21262d}
+td{padding:8px 10px;border-bottom:1px solid #1b2129}
+tr:last-child td{border-bottom:0}
+.num{text-align:center;font-variant-numeric:tabular-nums}
+.ok{color:#3fb950}.warn{color:#e3b341}
+.day{color:#8b949e;white-space:nowrap}
+.bar{width:34%}.bar span{display:block;height:8px;border-radius:4px;background:#1f6feb}
+ul{list-style:none;padding:0;margin:0;background:#161b22;border:1px solid #21262d;border-radius:10px}
+li{display:flex;justify-content:space-between;padding:7px 12px;border-bottom:1px solid #1b2129;font-size:13px}
+li:last-child{border-bottom:0}li.e{color:#6e7681}
+.cols{display:flex;gap:12px;flex-wrap:wrap}.cols>div{flex:1;min-width:260px}
+a{color:#58a6ff;text-decoration:none;font-size:12px}
+.note{color:#8b949e;font-size:12px;line-height:1.6;margin-top:8px}
+</style></head><body>
+<h1>סיכום ${days} הימים האחרונים</h1>
+<div class="sub">נכון ל-${new Date(data.generatedAt).toLocaleString('he-IL', { timeZone: config.TIMEZONE })} ·
+<a href="/admin/weekly?token=${encodeURIComponent(token)}&days=30">30 יום</a> ·
+<a href="/admin/dashboard?token=${encodeURIComponent(token)}">JSON מלא</a></div>
+
+<div class="cards">
+  <div class="k"><b>${t.started}</b><span>שיחות נפתחו</span></div>
+  <div class="k ok"><b>${t.captured}</b><span>הסתיימו עם שם וטלפון</span></div>
+  <div class="k"><b>${pct(t.conversionRate)}</b><span>אחוז המרה</span></div>
+  <div class="k warn"><b>${t.diedAtFirstMessage}</b><span>מתו אחרי ההודעה הראשונה${t.diedShare !== null ? ` · ${t.diedShare}%` : ''}</span></div>
+  <div class="k warn"><b>${t.unhandledHot}</b><span>לידים חמים שלא טופלו</span></div>
+</div>
+
+<h2>יום ביום</h2>
+<table>
+  <tr><th>יום</th><th class="num">נפתחו</th><th></th><th class="num">הומרו</th><th class="num">%</th><th class="num">מתו בהודעה הראשונה</th></tr>
+  ${rows}
+</table>
+<div class="note">"מת בהודעה הראשונה" = הליד כתב פעם אחת, קיבל תשובה, ומעולם לא ענה שוב.
+זו הנקודה עם המנוף הגדול ביותר: כל אחד כזה הוא קליק ששולם עליו ונעצר בשאלה הראשונה.</div>
+
+<h2>לידים חמים שעדיין לא טופלו</h2>
+<table>
+  <tr><th>ליד</th><th class="num">ניקוד</th><th>שלב</th><th class="num">שקט</th><th>טלפון</th><th></th></tr>
+  ${hot || '<tr><td colspan="6" class="e">אין — כל הלידים החמים טופלו. 🎉</td></tr>'}
+</table>
+
+<div class="cols">
+  <div><h2>מה שאלו הכי הרבה</h2><ul>${list(data.topQuestions, i => INTENT_HE[i.intent] || i.intent)}</ul></div>
+  <div><h2>התנגדויות שעלו</h2><ul>${list(data.topObjections, i => i.label)}</ul></div>
+</div>
+</body></html>`);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/admin/hot', requireAdmin, async (req, res) => {
   try {
     res.json(await dashboard.hotList(parseInt(req.query.limit || '20', 10)));
@@ -527,6 +649,7 @@ async function start() {
     console.log(`\n🤖 Running on port ${config.PORT}`);
     console.log(`📡 Webhook:   ${config.PUBLIC_URL}/webhook`);
     console.log(`📊 Dashboard: ${config.PUBLIC_URL}/admin/dashboard?token=***`);
+    console.log(`🗓️  סיכום שבועי: ${config.PUBLIC_URL}/admin/weekly?token=***`);
     console.log(`💾 Storage:   ${storage.isPostgres() ? 'Postgres ✅' : 'file ⚠️  EPHEMERAL'}`);
     console.log(`🧠 AI:        ${brain.isAvailable() ? config.AI_MODE : 'disabled (scripted mode)'}`);
     console.log(`⚖️  כללים:     ${require('./sales/leadProfile').rulesSignature()}\n`);

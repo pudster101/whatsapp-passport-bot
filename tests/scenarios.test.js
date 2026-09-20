@@ -45,6 +45,7 @@ const stages = require('../src/sales/stages');
 const brain = require('../src/ai/brain');
 const closing = require('../src/sales/closing');
 const nextAction = require('../src/sales/nextAction');
+const dashboard = require('../src/admin/dashboard');
 
 // ─── Tiny test harness ────────────────────────────────────────────────────────
 let passed = 0, failed = 0;
@@ -704,6 +705,39 @@ async function run() {
       /מייל|info@/.test(closing.nextContactAsk(refused)));
     check('phone-ask wording varies between turns',
       closing.nextContactAsk(fresh, { seed: 0 }) !== closing.nextContactAsk(fresh, { seed: 1 }));
+  }
+
+  // ── 24. The weekly page ────────────────────────────────────────────────────
+  section('24. Weekly summary');
+  {
+    const w = await dashboard.weekly(7);
+    check('returns one row per day', w.days.length === 7, `days=${w.days.length}`);
+    check('the last row is today', w.days[6].date ===
+      new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Jerusalem', year: 'numeric', month: '2-digit', day: '2-digit',
+      }).format(new Date()), w.days[6].date);
+    check('every day is labelled and counted',
+      w.days.every(d => d.label && Number.isInteger(d.started) && Number.isInteger(d.captured)
+                        && Number.isInteger(d.died)));
+    check('totals add up to the daily rows',
+      w.totals.started === w.days.reduce((n, d) => n + d.started, 0)
+      && w.totals.captured === w.days.reduce((n, d) => n + d.captured, 0));
+    check('a day with no conversations has no conversion rate',
+      w.days.every(d => d.started > 0 ? typeof d.conversionRate === 'number' : d.conversionRate === null));
+    check('unhandled hot leads come back as a list', Array.isArray(w.unhandledHot));
+    check('idle time is never negative',
+      w.unhandledHot.every(l => l.hoursIdle === null || l.hoursIdle >= 0));
+    check('questions and objections are ranked',
+      Array.isArray(w.topQuestions) && Array.isArray(w.topObjections)
+      && w.topQuestions.every((q, i, a) => i === 0 || a[i - 1].count >= q.count));
+
+    // A one-message lead is exactly what the page exists to count.
+    const dead = '972500000099';
+    await say(dead, 'היי, ראיתי מודעה על דרכון רומני');
+    const w2 = await dashboard.weekly(7);
+    check('a lead who wrote once is not yet counted as dead (2h grace)',
+      w2.totals.diedAtFirstMessage === w.totals.diedAtFirstMessage,
+      `${w.totals.diedAtFirstMessage} → ${w2.totals.diedAtFirstMessage}`);
   }
 
   // ── Summary ────────────────────────────────────────────────────────────────

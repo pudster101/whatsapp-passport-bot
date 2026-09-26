@@ -136,7 +136,15 @@ function evaluate(profile) {
   if (!config.FOLLOWUP_ENABLED) return null;
   if (profile.optedOut) return null;
   if (profile.humanStatus === 'handled') return null;
+  if (profile.followUpsSuppressed) return null;
   if (stages.TERMINAL.includes(profile.stage) && profile.stage !== 'LOST_NOT_NOW') return null;
+
+  // We already have a way to reach this person. Every sequence below exists to
+  // collect details or restart a stalled qualification, and both read as
+  // nonsense to someone whose number is already in the file with a call booked.
+  // On 15 Sep one of them asked a lead for "השם והטלפון שלך" the morning after
+  // he gave both and agreed on 16:30; he replied "יש לכם בעיה באלגוריתם?".
+  if (profile.clientPhone) return null;
   if ((profile.followUpsSent || 0) >= config.FOLLOWUP_MAX) return null;
 
   // Never follow up someone we spoke to in the last 6 hours

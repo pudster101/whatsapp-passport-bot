@@ -46,6 +46,7 @@ const brain = require('../src/ai/brain');
 const closing = require('../src/sales/closing');
 const nextAction = require('../src/sales/nextAction');
 const dashboard = require('../src/admin/dashboard');
+const prompts = require('../src/ai/prompts');
 
 // ─── Tiny test harness ────────────────────────────────────────────────────────
 let passed = 0, failed = 0;
@@ -790,6 +791,258 @@ async function run() {
     check('every variant row is internally consistent',
       w.byVariant.every(v => v.died <= v.mature && v.mature <= v.conversations
                              && v.leadsCaptured <= v.conversations));
+  }
+
+  // ── 26. The 24 Sep review of two weeks of live conversations ───────────────
+  section('26. Counting every conversation');
+  {
+    // Every ad lead sends the trigger phrase, and that path never logged the
+    // event — so the weekly page read started=0 on all 14 days of September.
+    const phone = newPhone();
+    await say(phone, TRIGGER);
+    const events = await storage.getEvents({ since: new Date(Date.now() - 60000).toISOString(), limit: 500 });
+    const started = events.filter(e => e.type === 'conversation_started' && e.waPhone === phone);
+    check('a lead arriving through the ad trigger is counted', started.length === 1,
+      `${started.length} events`);
+    check('the event carries the variant it was greeted with',
+      ['A', 'B'].includes(started[0]?.data?.variant), String(started[0]?.data?.variant));
+
+    // A restart must not count the same lead twice.
+    await say(phone, 'תפריט');
+    const again = (await storage.getEvents({ since: new Date(Date.now() - 60000).toISOString(), limit: 500 }))
+      .filter(e => e.type === 'conversation_started' && e.waPhone === phone);
+    check('a restart does not count the lead again', again.length === 1, `${again.length} events`);
+
+    const organic = newPhone();
+    await say(organic, 'שלום, ראיתי אתכם בגוגל');
+    const o = (await storage.getEvents({ since: new Date(Date.now() - 60000).toISOString(), limit: 500 }))
+      .filter(e => e.type === 'conversation_started' && e.waPhone === organic);
+    check('an organic lead is still counted exactly once', o.length === 1, `${o.length} events`);
+  }
+
+  section('27. A single character is not a new lead');
+  {
+    // 0547787804 got the opening message 22 mornings in a row, because a
+    // single letter is a substring of the trigger phrase.
+    check('"י" is not the trigger', !flows.isTriggerMessage('י'));
+    check('"ח" is not the trigger', !flows.isTriggerMessage('ח'));
+    check('"h" is not the trigger', !flows.isTriggerMessage('h'));
+    check('"שלום" alone is not the trigger', !flows.isTriggerMessage('שלום'));
+    check('a truncated trigger still matches',
+      flows.isTriggerMessage('שלום! אפשר לקבל מידע נוסף'));
+    check('the full trigger still matches', flows.isTriggerMessage(TRIGGER));
+
+    const phone = newPhone();
+    await say(phone, TRIGGER);
+    const out = await say(phone, 'ח');
+    check('a one-letter message gets a nudge, not the opening',
+      !out.includes('מי במשפחה נולד ברומניה'), out.slice(0, 60));
+    check('and the nudge invites a real message', /לשאול|לכתוב/.test(out));
+
+    // A lead already handed to the office is greeted as a returning client.
+    const known = newPhone();
+    await say(known, TRIGGER);
+    const p = profileOf(known);
+    p.name = 'דנה'; p.clientPhone = '0521234567'; p.stage = 'HUMAN_HANDOFF';
+    const back = await say(known, TRIGGER);
+    check('a handed-over lead is not put back through the opening',
+      back.includes('טוב לשמוע ממך שוב'), back.slice(0, 60));
+  }
+
+  section('28. A number is not optional');
+  {
+    // אורלי, קרן and ליאורה each agreed a time and were never asked.
+    const named = () => {
+      const p = leadProfile.create('972500000201');
+      p.name = 'קרן שרייבר'; p.messageCount = 6; p.motivation = 'דרכון לילדים';
+      p.buyingIntent = 65;
+      return p;
+    };
+
+    const closingTurn = nextAction.decide({
+      analysis: { intent: 'unclear' }, profile: named(),
+      text: 'מתי שנוח אני אתפנה לשיחה תודה', recentClose: true,
+    });
+    check('a recent close no longer silences the phone ask',
+      /טלפון|מספר/.test(closingTurn.fallbackText || '') ||
+      /מספר טלפון/.test(closingTurn.directive || ''), closingTurn.action);
+
+    const handover = nextAction.decide({
+      analysis: { intent: 'request_human' }, profile: named(), text: 'אשמח שתצרו איתי קשר',
+    });
+    check('a handover asks for the number too',
+      /מספר/.test(handover.fallbackText || ''), handover.fallbackText);
+
+    const ready = nextAction.decide({
+      analysis: { intent: 'ready_to_start' }, profile: named(), text: 'בוקר 11 מתאים לי',
+    });
+    check('agreeing a time asks for the number too',
+      /מספר/.test(ready.fallbackText || ''), ready.fallbackText);
+
+    // With a number in the file, nothing is appended.
+    const withPhone = named();
+    withPhone.clientPhone = '0544355222';
+    const done = nextAction.decide({
+      analysis: { intent: 'ready_to_start' }, profile: withPhone, text: 'בוקר מצוין',
+    });
+    check('a lead with a number is not asked again',
+      !/ולאיזה מספר/.test(done.fallbackText || ''));
+    // And a refusal is still respected.
+    const refused = named();
+    refused.contactRefusals = 1;
+    check('a refusal is still respected',
+      !/ולאיזה מספר/.test(closing.withPhoneAsk('נדבר בקרוב.', refused)));
+  }
+
+  section('29. "You never called me back"');
+  {
+    check('detects the complaint', closing.signalsMissedCallback('שלום לא חזרתם אלי'));
+    check('detects it in the other wording', closing.signalsMissedCallback('עדיין לא דיברנו'));
+    check('detects "nobody called"', closing.signalsMissedCallback('אף אחד לא התקשר אליי'));
+    check('an ordinary message is not a complaint',
+      !closing.signalsMissedCallback('מתי נוח לכם לחזור אליי?'));
+
+    const p = leadProfile.create('972500000202');
+    p.name = 'יוסי'; p.clientPhone = '0506204180'; p.buyingIntent = 100;
+    const d = nextAction.decide({ analysis: { intent: 'unclear' }, profile: p, text: 'שלום לא חזרתם אלי' });
+    check('it escalates', d.escalate === true && d.action === 'escalate_human');
+    check('it is marked urgent', d.urgent === true);
+    check('it apologises and does not re-pitch',
+      /מתנצל/.test(d.fallbackText) && !/מתי נוח/.test(d.fallbackText), d.fallbackText);
+
+    // "We already spoke" is the opposite instruction.
+    check('detects "we already spoke"', closing.signalsAlreadySpoke('היי. שוחחנו אתמול. הכול בסדר. תודה'));
+    check('"we have NOT spoken yet" is not that',
+      !closing.signalsAlreadySpoke('עדיין לא דיברנו'));
+    const d2 = nextAction.decide({
+      analysis: { intent: 'unclear' }, profile: p, text: 'אין צורך שיתקשר, שוחחנו אתמול',
+    });
+    check('it stops instead of re-coordinating',
+      d2.suppressFollowUp === true && !/מתי נוח/.test(d2.fallbackText || ''));
+  }
+
+  section('30. Follow-ups, files, language and gender');
+  {
+    const followup = require('../src/followup/scheduler');
+
+    // 0526604546 had a call booked and was asked for his details again.
+    const booked = leadProfile.create('972500000203');
+    booked.stage = 'HIGH_INTENT';
+    booked.clientPhone = '0526604546';
+    booked.lastInboundAt = new Date(Date.now() - 48 * 3600000).toISOString();
+    check('a lead whose number we already have is never chased',
+      followup.evaluate(booked) === null);
+
+    const noNumber = leadProfile.create('972500000204');
+    noNumber.stage = 'QUALIFICATION';
+    noNumber.lastInboundAt = new Date(Date.now() - 48 * 3600000).toISOString();
+    check('a lead with no number can still be followed up',
+      followup.evaluate(noNumber) !== null);
+
+    const stopped = leadProfile.create('972500000205');
+    stopped.stage = 'QUALIFICATION';
+    stopped.followUpsSuppressed = true;
+    stopped.lastInboundAt = new Date(Date.now() - 48 * 3600000).toISOString();
+    check('a lead who said "we already spoke" is never chased again',
+      followup.evaluate(stopped) === null);
+
+    // The English arm of the ad.
+    const en = newPhone();
+    const enOut = await say(en, 'Hello! Can I get more info on this?');
+    check('an English opener is answered in English',
+      /Hi!|Hello/.test(enOut) && !/הגעת למשרד/.test(enOut), enOut.slice(0, 70));
+    check('and the language is recorded', profileOf(en)?.lang === 'en');
+
+    const he = newPhone();
+    await say(he, TRIGGER);
+    check('a Hebrew opener is still Hebrew', profileOf(he)?.lang === 'he');
+
+    // Grammatical gender, read off the customer's own verbs.
+    const she = newPhone();
+    await say(she, TRIGGER);
+    await say(she, 'אני מעוניינת להוציא דרכון לילדיי');
+    check('a woman writing in the feminine is recorded as such',
+      profileOf(she)?.gender === 'f', String(profileOf(she)?.gender));
+    check('the prompt tells the model to use the feminine',
+      /בלשון נקבה/.test(prompts.composeSystem(profileOf(she), [], [])));
+
+    // A file that arrives is acknowledged as arrived.
+    const withFile = newPhone();
+    await say(withFile, TRIGGER);
+    sent.length = 0;
+    await flows.handleMessage(withFile, {
+      type: 'image', id: `img${Date.now()}`, image: { id: 'media-1', mime_type: 'image/jpeg' },
+    });
+    const ack = sent.map(s => s.text).join('\n');
+    check('a document is acknowledged as received', /קיבלתי/.test(ack), ack.slice(0, 60));
+    check('and never reported as failed to upload',
+      !/לא רואה|לא עלתה|לא הגיע/.test(ack), ack.slice(0, 80));
+  }
+
+  section('31. Route attributes, certainty and truncation');
+  {
+    check('blocks "no generation limit" on a restoration route',
+      brain.enforceGuardrails('האזרחות חוזרת בשיקום, ללא מגבלה לדורות') === null);
+    check('blocks it when the route is Article 10',
+      brain.enforceGuardrails('המסלול שלך הוא סעיף 10, והזכות עוברת ללא מגבלת דורות') === null);
+    check('allows it for הסדרת רישום, where it is true',
+      brain.enforceGuardrails('במסלול של הסדרת רישום אין מגבלת דורות — האזרחות לא אבדה') !== null);
+    check('blocks certainty about this family',
+      brain.enforceGuardrails('הסבא שלך נולד ברומניה ולכן הילדים שלך בוודאות זכאים') === null);
+    check('allows a hedged assessment',
+      brain.enforceGuardrails('לפי מה שסיפרת זה נראה כמו מסלול הסדרת רישום, אבל צריך לאמת מול הרשויות') !== null);
+
+    check('a truncated reply is cut back to a whole sentence',
+      brain.trimToWholeSentence(
+        'שאלה טובה. התשובה תלויה בשנת העזיבה, וזה מה שקובע את המסלול. יש לך דרך לברר את השנה מהמסמ'
+      ) === 'שאלה טובה. התשובה תלויה בשנת העזיבה, וזה מה שקובע את המסלול.');
+    check('a promise of a list that never came is dropped',
+      brain.trimToWholeSentence('מכאן שלושה מסלולים:') === '');
+  }
+
+  section('32. A passage is not an answer');
+  {
+    const retrieve = require('../src/kb/retrieve');
+    // ליבי asked what the process is and what it costs, and was handed the
+    // three-year passport deadline.
+    const q = 'אבי עלה ב-1951 ואני רוצה להוציא דרכון רומני לי ולילדיי. מה ההליך וכמה זה עולה?';
+    const cost = retrieve.forIntent('ask_cost', q, []);
+    check('a cost question retrieves cost material',
+      cost.every(h => (h.topics || []).some(t => /מחיר|עלות/.test(t))),
+      cost.map(h => h.id).join(','));
+    check('and not the passport deadline',
+      !cost.some(h => h.id === 'passport_3_year_deadline'), cost.map(h => h.id).join(','));
+    check('an off-topic intent returns nothing rather than something wrong',
+      retrieve.forIntent('ask_b1', 'מי במשפחה נולד ברומניה')
+        .every(h => (h.topics || []).some(t => /b1|שפה|בחינה|פטור|דדליין/i.test(t))));
+  }
+
+  section('33. The waiting list');
+  {
+    const waiting = leadProfile.create('972500000206');
+    waiting.name = 'פנינה'; waiting.clientPhone = '0523364545';
+    waiting.buyingIntent = 100; waiting.stage = 'HUMAN_HANDOFF';
+    waiting.humanStatus = 'notified';
+    waiting.lastInboundAt = new Date(Date.now() - 200 * 3600000).toISOString();
+    storage.setConversation('972500000206', { profile: waiting, history: [], startedAt: waiting.firstSeenAt });
+
+    const list = dashboard.waitingForCallback({ minHours: 12 });
+    const row = list.find(l => l.phone === '972500000206');
+    check('a lead waiting days appears on the list', !!row);
+    check('with the hours it has been waiting', row && row.hoursWaiting >= 199, String(row?.hoursWaiting));
+
+    waiting.humanStatus = 'handled';
+    storage.setConversation('972500000206', { profile: waiting, history: [], startedAt: waiting.firstSeenAt });
+    check('marking it handled takes it off the list',
+      !dashboard.waitingForCallback({ minHours: 12 }).some(l => l.phone === '972500000206'));
+
+    const fresh = leadProfile.create('972500000207');
+    fresh.name = 'חדש'; fresh.clientPhone = '0500000000';
+    fresh.buyingIntent = 100; fresh.stage = 'HUMAN_HANDOFF'; fresh.humanStatus = 'notified';
+    fresh.lastInboundAt = new Date().toISOString();
+    storage.setConversation('972500000207', { profile: fresh, history: [], startedAt: fresh.firstSeenAt });
+    check('a lead from an hour ago is not nagged about yet',
+      !dashboard.waitingForCallback({ minHours: 12 }).some(l => l.phone === '972500000207'));
   }
 
   // ── Summary ────────────────────────────────────────────────────────────────

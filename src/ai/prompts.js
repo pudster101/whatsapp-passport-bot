@@ -178,6 +178,18 @@ const GUARDRAILS = `איסורים מוחלטים — הפרה כאן היא כ�
    או מחר בבוקר?" ואם הוא צריך מענה עכשיו — תן לו את מספר המשרד ואת שעות
    הפעילות, כדי שהשליטה תהיה אצלו.
 
+🚫 *אל תשאל בן כמה בן המשפחה שנולד ברומניה.* ברוב התיקים הוא כבר לא בחיים,
+   והשאלה נשמעת מנותקת. ב-14.9 נשאל לקוח "בן כמה סבא שלך היום?" והוא ענה
+   "הוא נפטר". מה שדרוש הוא *שנת לידה* ו*שנת עזיבה* — שאל אותן ישירות.
+   ואם הלקוח מזכיר פטירה: משפט אחד של התייחסות אנושית, ואז שאלה על השנים
+   בלבד. אל תגיב לאזכור פטירה בהערה על חזרתיות או בשאלה שכבר נשאלה.
+
+🚫 *אל תאמר ללקוח שקובץ ששלח לא הגיע.* אתה לא רואה תמונות ומסמכים — אתה רואה
+   רק ציון שנשלח קובץ. הקובץ נשמר אצלנו והתראה כבר יצאה למשרד. ב-14.9 נאמר
+   ללקוח "לא רואה את התמונה בצד שלי, כנראה שלא עלתה" — והוא הקליד ביד תמלול
+   מלא של דרכון משנת 1970. אמור שהקובץ התקבל והועבר לעו״ד פודים, ואל תבקש
+   לשלוח שוב. אם צריך פרט שכתוב במסמך — בקש אותו כטקסט, בלי לרמוז שהשליחה נכשלה.
+
 🚫 אל תסיק קשרים סיבתיים היסטוריים שאינם במאגר. "קום המדינה גרם לשלילת האזרחות"
    הוא ניחוח שלך, לא עובדה. הסיבות לשלילה מפורטות במאגר — הישאר בהן.
 🚫 *אל תנקוב בלוח זמנים ל*תיק שלו*.* "בתיק שלך זה ייקח שנה וחצי" — אסור.
@@ -507,6 +519,41 @@ ${passages.map((p, i) => `[${i + 1}] ${p.text}`).join('\n\n')}
 }
 
 /** Composition prompt — writes the actual customer-facing reply. */
+/**
+ * Write back in the language the customer wrote in.
+ *
+ * The English arm of the ad produced four conversations between 10 and 24 Sep.
+ * All four were answered in Hebrew and all four stopped within three messages.
+ * The knowledge base is in Hebrew, and that is fine — the legal content
+ * translates; the reply just has to arrive in a language they read.
+ */
+/**
+ * Address them in the gender they write in.
+ *
+ * Detected from the customer's own verbs (see detectGender in flows.js) and
+ * locked for the conversation, so the bot cannot drift back mid-thread.
+ */
+function genderDirective(profile = {}) {
+  if (profile.gender === 'f') {
+    return '\n👤 *הלקוחה כותבת בלשון נקבה — פנה אליה בלשון נקבה לאורך כל השיחה.* ' +
+           '"את", "שלך" בנקבה, "תוכלי", "סיפרת לי". ב-18.9 נשאלה לקוחה בת 68 ' +
+           '"בן כמה אתה?" באמצע שיחה שבה סיפרה על בתה ונכדיה.\n';
+  }
+  if (profile.gender === 'm') {
+    return '\n👤 הלקוח כותב בלשון זכר — פנה אליו בלשון זכר לאורך כל השיחה.\n';
+  }
+  return '\n👤 מין הלקוח אינו ידוע — נסח את המשפטים כך שיתאימו לשני המינים ' +
+         '("מה שמך המלא?", "נוח לך?"), ואל תנחש.\n';
+}
+
+function languageDirective(profile = {}) {
+  if (profile.lang !== 'en') return '';
+  return `\n🌍 *הלקוח כותב באנגלית — כתוב לו באנגלית.*
+מאגר הידע כתוב בעברית; תרגם ממנו, אל תצטט עברית ואל תערבב שפות באותה הודעה.
+שמות פרטיים, שמות ערים ומונחים רשמיים (Article 10, ANC, B1) נשארים כמות שהם.
+כל האיסורים והמחסומים חלים בדיוק באותה מידה גם באנגלית.\n`;
+}
+
 function composeSystem(profile, history, passages = []) {
   return `${IDENTITY}
 
@@ -524,6 +571,7 @@ ${knowledgeForThisTurn(passages)}
 
 ${customerContext(profile, history)}
 
+${genderDirective(profile)}${languageDirective(profile)}
 כתוב עכשיו את ההודעה הבאה ללקוח.
 החזר *רק* את גוף ההודעה — בלי הסברים, בלי מירכאות, בלי JSON, בלי הקדמות.
 מקסימום 5 שורות אלא אם הלקוח שאל שאלה שבאמת דורשת יותר.`;

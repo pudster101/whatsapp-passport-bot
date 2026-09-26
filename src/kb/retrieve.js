@@ -385,9 +385,33 @@ const INTENT_TOPICS = {
   ready_to_start:  ['שלבים', 'מסמכים', 'זכאות'],
 };
 
+/**
+ * Retrieval for a recognised question.
+ *
+ * Topic overlap used to be a boost and nothing more, so a passage from an
+ * unrelated topic could still win on raw word overlap. On 14 Sep ליבי asked
+ * what the process involves and what it costs, and was handed the three-year
+ * deadline for applying for a passport — a true paragraph, about something
+ * else, in place of an answer. Her message contained "דרכון", and that was
+ * enough.
+ *
+ * When we know what the question is about, a passage that shares none of its
+ * topics is not an answer to it. Those are dropped, and the caller falls back
+ * to the FAQ entry written for that intent.
+ */
 function forIntent(intent, query, exclude = []) {
   const topics = INTENT_TOPICS[intent] || [];
-  return retrieve(query, { limit: 3, boostTopics: topics, exclude });
+  const hits = retrieve(query, { limit: 3, boostTopics: topics, exclude });
+  if (!topics.length || !hits.length) return hits;
+
+  const wanted = new Set(topics.flatMap(t => tokenize(t)));
+  const onTopic = hits.filter(h => {
+    const have = new Set((h.topics || []).flatMap(t => tokenize(t)));
+    for (const term of wanted) if (have.has(term)) return true;
+    return false;
+  });
+
+  return onTopic;
 }
 
 module.exports = { retrieve, byTopics, byId, forIntent, tokenize, stem, INTENT_TOPICS };

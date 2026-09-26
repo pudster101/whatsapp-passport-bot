@@ -86,8 +86,58 @@ function isTriggerMessage(text) {
   if (!n) return false;
   return TRIGGER_PHRASES.some(t => {
     const nt = normalise(t);
-    return n === nt || n.includes(nt) || nt.includes(n);
+    if (n === nt) return true;
+    if (n.includes(nt)) return true;          // the trigger plus the lead's own words
+    // The reverse direction catches a trigger the ad platform truncated — but
+    // it used to accept ANY substring, and a single letter is a substring of
+    // the trigger phrase. That is why 0547787804 got the opening message 22
+    // mornings in a row: "י", "ח", "ע", even the English "h" and "n", each
+    // counted as a fresh click on the ad and restarted his conversation.
+    return n.length >= 12 && nt.startsWith(n);
   });
+}
+
+/**
+ * Which language did they write in? Hebrew wins whenever any Hebrew appears —
+ * a lead who mixes "B1" or a city name into a Hebrew sentence is writing
+ * Hebrew. Latin-only text with a few letters in it is English.
+ */
+function detectLang(text) {
+  const t = String(text || '');
+  if (/[֐-׿]/.test(t)) return 'he';
+  if ((t.match(/[A-Za-z]/g) || []).length >= 3) return 'en';
+  return null;
+}
+
+/**
+ * Which grammatical gender to address them in.
+ *
+ * Four women in the 10–24 Sep window were addressed in the masculine for whole
+ * conversations — עדנה לאופר, 68, was asked "בן כמה אתה?" while explaining that
+ * her daughter and grandchildren might also be eligible. Hebrew makes this
+ * visible in every second word, and a law firm that gets it wrong reads as a
+ * form letter.
+ *
+ * Read it off the customer's own verbs, which is where it is unambiguous.
+ * Names are not used: ישראלי names split badly by gender and a wrong guess is
+ * worse than no guess.
+ */
+// No \b anywhere: JavaScript word boundaries are ASCII-only and never match
+// next to a Hebrew letter. And every masculine form here is a prefix of its
+// feminine counterpart ("מעוניין" inside "מעוניינת"), so each one carries a
+// lookahead that refuses the feminine ending.
+const FEMININE_SELF =
+  /(?:מעוניינת|מתעניינת|מבררת|בודקת|נשואה|גרושה|אלמנה|מבקשת|שמחתי|אני צריכה|אני יכולה|אני מבינה|אני שואלת|אני מחפשת|אני חושבת|אני גרה|אני בטוחה)/;
+const MASCULINE_SELF =
+  /(?:מעוניין(?!ת)|מתעניין(?!ת)|מברר(?!ת)|בודק(?!ת)|נשוי|גרוש(?!ה)|אלמן(?!ה)|מבקש(?!ת)|אני צריך|אני יכול(?!ה)|אני מבין(?!ה)|אני שואל(?!ת)|אני מחפש(?!ת)|אני חושב(?!ת)|אני גר(?!ה)|אני בטוח(?!ה))/;
+
+function detectGender(text) {
+  const t = String(text || '');
+  const f = FEMININE_SELF.test(t);
+  const m = MASCULINE_SELF.test(t);
+  if (f && !m) return 'f';
+  if (m && !f) return 'm';
+  return null;
 }
 
 const RESTART_WORDS = ['תפריט', 'menu', 'התחל', 'start', 'restart', 'התחל מחדש'];
@@ -246,6 +296,23 @@ async function handleMessage(phone, message) {
       return;
     }
     session.lastMediaAckAt = new Date(now).toISOString();
+
+    // The model never sees the file — only the placeholder above. Left to the
+    // AI it invents an explanation, and on 14 Sep it told אפרים שמר that his
+    // eight photos "כנראה לא עלו כמו שצריך". They had; the alert had already
+    // gone out. He then typed a full transcription of a 1970 passport by hand.
+    // So the acknowledgement is fixed copy: it arrived, and it is with the
+    // office.
+    profile.lastInboundAt = new Date(now).toISOString();
+    profile.messageCount = (profile.messageCount || 0) + 1;
+    pushHistory(session, 'user', text);
+    await reply(phone, session, profile.lang === 'en'
+      ? `Got it — the file is saved and has been passed to Mr. Pudim, who will ` +
+        `go over it himself. \u{1F4C4}\n\nYou can send more if you have them.`
+      : `קיבלתי — הקובץ נשמר והועבר לעו״ד פודים, שיעבור עליו בעצמו. 📄\n\n` +
+        `אם יש עוד מסמכים, אפשר לשלוח גם אותם.`);
+    save(phone, session);
+    return;
   } else {
     // Location, contacts, stickers, unsupported types
     text = `[${msgType}]`;
@@ -343,7 +410,7 @@ async function handleMessage(phone, message) {
   // ── Trigger phrase → fresh start ──────────────────────────────────────────
   if (isTriggerMessage(text)) {
     profile.source = profile.source === 'unknown' ? 'fb_ad' : profile.source;
-    await handleStart(phone, session);
+    await handleStart(phone, session, { firstMessage: text });
     return;
   }
 
@@ -366,7 +433,6 @@ async function handleMessage(phone, message) {
   if (isNew || session.state === 'NEW') {
     console.log(`🆕 [${phone}] Unknown number, no trigger — starting conversation anyway`);
     profile.source = profile.source === 'unknown' ? 'organic' : profile.source;
-    storage.logEvent(phone, 'conversation_started', { source: profile.source, firstMessage: text });
     await handleStart(phone, session, { firstMessage: text });
     return;
   }
@@ -388,6 +454,24 @@ async function handleMessage(phone, message) {
   // ── Button presses stay fully deterministic ───────────────────────────────
   if (buttonId) {
     await handleButton(phone, session, buttonId);
+    return;
+  }
+
+  // ── A message with nothing in it ──────────────────────────────────────────
+  // One or two characters carry no question, no fact and no intent. Sending
+  // them through the sales pipeline produced a full sales turn every morning
+  // for three weeks. Answer briefly, in a way that invites a real message, and
+  // do not spend an AI call on it.
+  if (text && text.trim().length <= 2 && !/^\d+$/.test(text.trim())) {
+    profile.lastInboundAt = new Date().toISOString();
+    profile.messageCount = (profile.messageCount || 0) + 1;
+    pushHistory(session, 'user', text);
+    const nudges = [
+      'נראה שההודעה נשלחה חלקית 🙂 מה רצית לשאול?',
+      'לא הגיע לי טקסט מלא — אפשר לכתוב שוב?',
+    ];
+    await reply(phone, session, nudges[(profile.messageCount || 0) % nudges.length]);
+    save(phone, session);
     return;
   }
 
@@ -418,11 +502,38 @@ async function handleStart(phone, session, opts = {}) {
   // pure function of the phone number and is recorded on the profile the first
   // time we greet, so a returning lead never flips and the rollup can group by
   // it. Only the first-contact opening varies; the returning greeting does not.
-  const returning = (profile.messageCount || 0) > 1 && profile.name;
+  // A lead whose file is already open — a name, a number, or a handover to the
+  // office — is never greeted as a stranger, whatever brought them back.
+  // Answer in the language they wrote in. The English arm of the ad sends
+  // "Hello! Can I get more info on this?" — and got a wall of Hebrew back.
+  if (!profile.lang) profile.lang = detectLang(opts.firstMessage) || 'he';
+
+  const known = !!(profile.name || profile.clientPhone);
+  const returning = known &&
+    ((profile.messageCount || 0) > 1 || stages.TERMINAL.includes(profile.stage));
   if (!profile.openingVariant) profile.openingVariant = experiment.assign(phone);
+
+  // Count the conversation HERE, not in the caller.
+  //
+  // conversation_started used to be logged only in the "unknown number, no
+  // trigger" branch. Every lead who clicks the ad sends the trigger phrase and
+  // takes the other branch, so no ad lead was ever counted: the weekly page
+  // showed started=0 on all 14 days of September, conversionRate came back
+  // null, and the per-ad funnel and the opening A/B — both of which divide by
+  // this number — had nothing to divide. Logging it in handleStart catches
+  // every route in, and the profile flag keeps a "תפריט" restart from counting
+  // the same lead twice.
+  if (!profile.countedStartAt) {
+    profile.countedStartAt = new Date().toISOString();
+    storage.logEvent(phone, 'conversation_started', {
+      source: profile.source,
+      variant: profile.openingVariant,
+      firstMessage: opts.firstMessage || null,
+    });
+  }
   const welcome = returning
-    ? `היי ${profile.name}! 👋 טוב לשמוע ממך שוב.\n\nבמה אוכל לעזור הפעם?`
-    : experiment.opening(profile.openingVariant);
+    ? `היי${profile.name ? ` ${profile.name}` : ''}! 👋 טוב לשמוע ממך שוב.\n\nבמה אוכל לעזור הפעם?`
+    : experiment.opening(profile.openingVariant, profile.lang);
 
   await reply(phone, session, welcome);
   save(phone, session);
@@ -531,6 +642,18 @@ async function handleInterestRomanianCourse(phone, session) {
 
 async function handleFreeText(phone, session, text, opts = {}) {
   const profile = session.profile;
+
+  // A lead can switch languages mid-conversation, and an unlabelled session
+  // (anything that started before this existed) gets labelled on first use.
+  if (!profile.lang) profile.lang = detectLang(text) || 'he';
+  else if (profile.lang === 'he' && detectLang(text) === 'en'
+           && (profile.messageCount || 0) <= 1) profile.lang = 'en';
+
+  // Lock the grammatical gender the first time the customer reveals it.
+  if (!profile.gender) {
+    const g = detectGender(text);
+    if (g) profile.gender = g;
+  }
 
   // 1. Understand.
   //
@@ -757,8 +880,14 @@ async function handleFreeText(phone, session, text, opts = {}) {
   if (decision.escalate) {
     p.humanStatus = 'notified';
     p.stage = 'HUMAN_HANDOFF';
-    storage.logEvent(phone, 'human_handoff', { reason: decision.reason });
-    handoff.notifyHandoff(p, decision.reason).catch(e => console.warn('⚠️ handoff notify:', e.message));
+    // A lead who told us the call never happened must never be chased by the
+    // scheduler afterwards.
+    if (decision.suppressFollowUp) p.followUpsSuppressed = true;
+    storage.logEvent(phone, 'human_handoff', {
+      reason: decision.reason, urgent: !!decision.urgent,
+    });
+    handoff.notifyHandoff(p, decision.reason, { urgent: !!decision.urgent })
+      .catch(e => console.warn('⚠️ handoff notify:', e.message));
   } else if (
     scoring.isHot(p.buyingIntent, config.HOT_LEAD_THRESHOLD) &&
     !session.hotNotified

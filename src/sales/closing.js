@@ -100,6 +100,31 @@ function callClose(profile = {}, opts = {}) {
   return lines[seed % lines.length];
 }
 
+/**
+ * A number is not optional.
+ *
+ * On 14–17 Sep three leads went the whole way — אורלי רוחם, קרן שרייבר and
+ * ליאורה מניס each gave a name, heard which route they were likely on, and
+ * picked a time — and not one of them was ever asked for a phone number. The
+ * ask was suppressed by the "we closed recently, don't nag" rule, which fired
+ * exactly when the lead was warmest. An agreed time with no number is not an
+ * appointment; it is a lead we cannot reach.
+ *
+ * So every closing line passes through here: if the file has no number and the
+ * lead has not refused to give one, the line carries the request.
+ */
+const ASKS_FOR_PHONE = /(מספר\s+ה?טלפון|מה\s+המספר|טלפון\s+לחזרה|לאיזה\s+מספר|אפשר\s+מספר)/;
+
+function needsPhoneAsk(profile = {}) {
+  return !profile.clientPhone && !(profile.contactRefusals > 0);
+}
+
+function withPhoneAsk(text, profile = {}) {
+  if (!text || !needsPhoneAsk(profile)) return text;
+  if (ASKS_FOR_PHONE.test(text)) return text;
+  return `${text}\n\n*ולאיזה מספר שיחזור אליך?*`;
+}
+
 /** Does this text already contain a real close? */
 function hasCallClose(text) {
   if (!text) return false;
@@ -277,6 +302,48 @@ function nextContactAsk(profile = {}, opts = {}) {
   return PHONE_ASK_VARIANTS[i](profile);
 }
 
+/**
+ * "Nobody called me back."
+ *
+ * יוסי wrote "שלום לא חזרתם אלי" on 13 Sep, seven days after leaving his
+ * number. פנינה wrote "עדיין לא דיברנו" on 15 Sep and the bot answered
+ * "רשום. אם משהו משתנה — 03-5517801". Both were scored 100. A customer saying
+ * this is the most expensive sentence in the transcript, and it must stop the
+ * sales script and reach a human the same minute.
+ */
+const MISSED_CALLBACK = [
+  /לא\s+חזר(?:תם|ו|ת)\s*(?:אליי?|אלינו)?/,
+  /אף\s+אחד\s+לא\s+(?:התקשר|חזר|ענה|יצר\s+קשר)/,
+  /עדיין\s+לא\s+(?:חזרו|חזרתם|דיברנו|התקשרתם|שוחחנו)/,
+  /מחכה\s+(?:כבר\s+)?(?:לשיחה|שיחזרו|שיתקשרו)/,
+  /לא\s+(?:התקשרתם|התקשרו)\s*(?:אליי?)?/,
+];
+
+function signalsMissedCallback(text) {
+  const t = String(text || '');
+  return MISSED_CALLBACK.some(re => re.test(t));
+}
+
+/**
+ * "We already spoke." Not a complaint — an instruction to stop.
+ *
+ * 0526604546 had a call booked for 16:30 when a follow-up asked him again for
+ * his name and number. He answered "היי. שוחחנו אתמול. הכול בסדר. תודה", the
+ * bot kept coordinating, and he ended with
+ * "למה שיתקשר אלי היום אחרי 16:30 אם אתמול שוחחנו?!?!?!?!".
+ */
+const ALREADY_SPOKE = [
+  /(?:כבר\s+)?(?:שוחחנו|דיברנו|דיברתי\s+איתו|התקשרו\s+אליי?)\s*(?:אתמול|היום|קודם|בבוקר|כבר)?/,
+  /אין\s+צורך\s+ש?(?:יתקשר|תתקשרו|יחזור)/,
+  /כבר\s+טופלתי/,
+];
+
+function signalsAlreadySpoke(text) {
+  const t = String(text || '');
+  if (signalsMissedCallback(t)) return false;     // "עדיין לא דיברנו" is the opposite
+  return ALREADY_SPOKE.some(re => re.test(t));
+}
+
 /** Only unambiguous goodbyes. Comparing firms is not leaving. */
 const ENDING_PATTERNS = [
   /^\s*(תודה|ביי|להתראות)\s*[!.]?\s*$/,
@@ -300,6 +367,10 @@ module.exports = {
   signalsEnding,
   contactLadder,
   nextContactAsk,
+  needsPhoneAsk,
+  withPhoneAsk,
+  signalsMissedCallback,
+  signalsAlreadySpoke,
   signalsNoPush,
   signalsContactRefusal,
   softNudge,

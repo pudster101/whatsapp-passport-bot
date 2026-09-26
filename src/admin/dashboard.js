@@ -344,4 +344,48 @@ async function hotList(limit = 20) {
   return rows.sort((a, b) => b.score - a.score).slice(0, limit);
 }
 
-module.exports = { funnel, hotList, weekly };
+/**
+ * Leads who left a number and are still waiting for a human.
+ *
+ * The bot did its job for יוסי and for פנינה גנץ: both scored 100, both left a
+ * name and a number, both agreed a time. Then nobody called — 252 and 209 hours
+ * by the time it showed up in a report, and both of them wrote back to ask.
+ * Nothing in the system said a word in between. This is the list that gets sent
+ * every morning until someone marks them handled.
+ */
+function waitingForCallback({ minHours = 12, minScore = null } = {}) {
+  const threshold = minScore == null ? config.HOT_LEAD_THRESHOLD : minScore;
+  const conversations = storage.getAllConversations();
+  const rows = [];
+
+  for (const [phone, session] of Object.entries(conversations)) {
+    const p = session?.profile;
+    if (!p || p.optedOut) continue;
+    if (p.humanStatus === 'handled') continue;
+
+    // Someone we can actually call: a number, and a state that says the
+    // conversation is done with the bot.
+    const handedOver = p.stage === 'HUMAN_HANDOFF' || p.stage === 'CONVERSION'
+                       || p.humanStatus === 'notified';
+    if (!p.clientPhone || !handedOver) continue;
+    if ((p.buyingIntent || 0) < threshold && p.stage !== 'CONVERSION') continue;
+
+    const last = p.lastInboundAt ? new Date(p.lastInboundAt).getTime() : 0;
+    const hours = last ? Math.round((Date.now() - last) / 3600000) : null;
+    if (hours === null || hours < minHours) continue;
+
+    rows.push({
+      phone,
+      name: p.name || null,
+      clientPhone: p.clientPhone,
+      score: p.buyingIntent || 0,
+      stage: stages.label(p.stage),
+      hoursWaiting: hours,
+      summary: p.conversationSummary || null,
+    });
+  }
+
+  return rows.sort((a, b) => b.hoursWaiting - a.hoursWaiting);
+}
+
+module.exports = { funnel, hotList, weekly, waitingForCallback };

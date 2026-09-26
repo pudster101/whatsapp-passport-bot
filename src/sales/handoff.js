@@ -147,10 +147,14 @@ async function notifyHotLead(profile) {
 }
 
 /** Customer asked for a human, or the system decided one is needed. */
-async function notifyHandoff(profile, reason) {
+async function notifyHandoff(profile, reason, opts = {}) {
   const text = leadCard(profile, {
-    title: '🆘 *נדרש נציג אנושי*',
-    recommendation: reason || 'הלקוח ביקש לדבר עם נציג.',
+    title: opts.urgent
+      ? '🚨 *לקוח מתלונן שלא חזרו אליו — דחוף*'
+      : '🆘 *נדרש נציג אנושי*',
+    recommendation: opts.urgent
+      ? 'חייג עכשיו. הלקוח כבר השאיר פרטים והמתין.'
+      : (reason || 'הלקוח ביקש לדבר עם נציג.'),
   });
   return notifyAgents(
     text,

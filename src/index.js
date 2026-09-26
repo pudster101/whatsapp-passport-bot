@@ -304,6 +304,35 @@ ${data.byVariant && data.byVariant.length ? `
   }
 });
 
+/**
+ * Mark a lead as called, from the link in the morning waiting-list message.
+ * A GET so it works from a tap in WhatsApp.
+ */
+app.get('/admin/handled', requireAdmin, (req, res) => {
+  const phone = String(req.query.phone || '').replace(/\D/g, '');
+  const session = phone ? storage.getConversation(phone) : null;
+  if (!session?.profile) {
+    return res.status(404).type('html').send(
+      `<html lang="he" dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;padding:32px">
+       <h2>לא נמצאה שיחה למספר הזה</h2></body></html>`);
+  }
+  session.profile.humanStatus = 'handled';
+  session.profile.handledAt = new Date().toISOString();
+  storage.setConversation(phone, session);
+  storage.logEvent(phone, 'marked_handled', {});
+  res.type('html').send(
+    `<html lang="he" dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;padding:32px">
+     <h2>✅ סומן כטופל</h2>
+     <p>${session.profile.name || phone} לא יופיע יותר ברשימת הממתינים.</p></body></html>`);
+});
+
+app.get('/admin/waiting', requireAdmin, (req, res) => {
+  const hours = parseInt(req.query.hours, 10);
+  res.json(dashboard.waitingForCallback({
+    minHours: Number.isFinite(hours) ? hours : 12,
+  }));
+});
+
 app.get('/admin/hot', requireAdmin, async (req, res) => {
   try {
     res.json(await dashboard.hotList(parseInt(req.query.limit || '20', 10)));
@@ -641,6 +670,41 @@ function scheduleJobs() {
       }
     }, { timezone: 'UTC' });
     console.log(`⏰ Daily digest scheduled → ${config.AGENT_PHONES.join(', ')}`);
+  }
+
+  // The waiting list — 08:30 Israel time (05:30 UTC), Sunday to Thursday.
+  //
+  // Separate from the digest on purpose: the digest is a summary you can skim,
+  // this is a list of people who left a number and are still waiting. It keeps
+  // arriving until each one is marked handled, because that is exactly what
+  // happened to יוסי and to פנינה — ten days of silence that nothing flagged.
+  if (config.AGENT_PHONES.length) {
+    cron.schedule('30 5 * * 0-4', async () => {
+      try {
+        const waiting = dashboard.waitingForCallback({ minHours: 12 });
+        if (!waiting.length) return;
+
+        const link = (phone) => config.ADMIN_TOKEN
+          ? `\n   ✔️ סומן כטופל: ${config.PUBLIC_URL}/admin/handled?token=${encodeURIComponent(config.ADMIN_TOKEN)}&phone=${phone}`
+          : '';
+
+        const lines = waiting.slice(0, 10).map((l, i) =>
+          `${i + 1}. *${l.name || l.clientPhone}* — ${l.clientPhone} · ${l.score}/100 · ` +
+          `ממתין ${l.hoursWaiting} שעות${link(l.phone)}`
+        ).join('\n\n');
+
+        await handoff.notifyAgents(
+          `📞 *ממתינים לשיחה ממך* (${waiting.length})\n\n${lines}\n\n` +
+          `_כל אלה השאירו מספר וקיבלו הבטחה שיחזרו אליהם._`,
+          'pudim_waiting_list',
+          [String(waiting.length)]
+        );
+        console.log(`✅ Waiting list sent — ${waiting.length} lead(s)`);
+      } catch (err) {
+        console.error('❌ Waiting list error:', err.message);
+      }
+    }, { timezone: 'UTC' });
+    console.log('⏰ Waiting-list alert scheduled (08:30 Israel, Sun–Thu)');
   }
 }
 

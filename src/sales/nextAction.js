@@ -76,15 +76,67 @@ function decide({ analysis, profile, text, recentClose = false }) {
   const needsPhone = !!profile.name && !profile.clientPhone
                      && !(profile.contactRefusals > 0);
 
+  // No number in the file at all — name or no name. Every branch that closes,
+  // hands over, or agrees a time carries the request with it. Three leads in
+  // mid-September picked a time and were never asked for a number, because the
+  // "we just closed, don't nag" rule silenced the ask at the warmest moment.
+  const noNumber = closing.needsPhoneAsk(profile);
+  const PHONE_RIDER = noNumber
+    ? ' ⚠️ אין מספר טלפון בתיק. סיים את ההודעה בבקשה מפורשת למספר טלפון — ' +
+      'גם אם כבר סוכם מועד, וגם אם ביקשת בעבר. מועד בלי מספר אינו פגישה.'
+    : '';
+
   // 1. Explicit human request or AI escalation — always wins
   if (intent === 'request_human' || analysis?.escalate) {
     return {
       action: ACTIONS.ESCALATE_HUMAN,
       reason: analysis?.escalateReason || 'customer requested a human',
       directive: 'הודע בטבעיות שעו״ד פודים עצמו יחזור אליו — ואז שאל מתי נוח, ' +
-                 'עם שתי אפשרויות זמן קונקרטיות. לעולם לא "בהקדם".',
-      fallbackText: closing.callClose(profile, { variant: 'handoff' }),
+                 'עם שתי אפשרויות זמן קונקרטיות. לעולם לא "בהקדם".' + PHONE_RIDER,
+      fallbackText: closing.withPhoneAsk(
+        closing.callClose(profile, { variant: 'handoff' }), profile),
+      appendContactAsk: noNumber,
       escalate: true,
+    };
+  }
+
+  // 1b. "You never called me back." Nothing outranks this except an explicit
+  //     request for a human, which lands in the same place anyway. No pitch,
+  //     no scheduling script, no closing line — an apology, a commitment, and
+  //     an urgent alert to the office.
+  if (closing.signalsMissedCallback(text)) {
+    return {
+      action: ACTIONS.ESCALATE_HUMAN,
+      reason: 'customer says nobody called back',
+      directive:
+        'הלקוח אומר שלא חזרו אליו. זו תלונה, לא שלב במכירה. ' +
+        'התנצל במשפט אחד, אל תמכור שום דבר, אל תסביר תהליך, ואל תציע "לתאם" מחדש. ' +
+        'אמור שאתה מעביר את זה לעו״ד פודים עכשיו, ותן את מספר המשרד כדי שהשליטה ' +
+        `תהיה אצלו: ${closing.OFFICE_PHONE} · ${closing.HOURS}.` + PHONE_RIDER,
+      fallbackText: closing.withPhoneAsk(
+        `אני מתנצל — זה לא היה אמור לקרות. 🙏\n\n` +
+        `אני מעביר את זה לעו״ד פודים עכשיו כדי שיחזור אליך היום.\n` +
+        `ואם נוח לך להקדים — *${closing.OFFICE_PHONE}* · ${closing.HOURS}, תבקש אותו ישירות.`,
+        profile),
+      escalate: true,
+      urgent: true,
+    };
+  }
+
+  // 1c. "We already spoke." An instruction to stop, not an opening to sell.
+  if (closing.signalsAlreadySpoke(text)) {
+    return {
+      action: ACTIONS.ESCALATE_HUMAN,
+      reason: 'customer says the call already happened',
+      directive:
+        'הלקוח אומר שכבר שוחחו איתו. אל תתאם שוב, אל תחזור על מה שסוכם, ' +
+        'ואל תתעקש שהשיחה עוד לפניו — אינך יודע מה קרה מחוץ לוואטסאפ. ' +
+        'אשר במשפט אחד שהכל רשום, ואמור שתוודא שלא תישלח אליו פנייה נוספת.',
+      fallbackText:
+        `מצוין, תודה שעדכנת — רשמתי שכבר דיברתם. 🙏\n\n` +
+        `לא נטריד אותך שוב בעניין הזה. אם יעלה משהו — *${closing.OFFICE_PHONE}*.`,
+      escalate: true,
+      suppressFollowUp: true,
     };
   }
 
@@ -158,13 +210,14 @@ function decide({ analysis, profile, text, recentClose = false }) {
         'הלקוח מסיים את השיחה. אל תילחם ואל תחזור על מה שכבר נאמר. ' +
         'הכר בזה במשפט אחד, ואז שים על השולחן שיחה קצרה עם עו״ד פודים עצמו — ' +
         'ללא עלות וללא התחייבות — עם שתי אפשרויות זמן קונקרטיות, ' +
-        `ומספר המשרד ${closing.OFFICE_PHONE} כדי שהשליטה תישאר אצלו.`,
+        `ומספר המשרד ${closing.OFFICE_PHONE} כדי שהשליטה תישאר אצלו.` + PHONE_RIDER,
       // Already pitched a turn or two ago? Then this is a goodbye, not a
       // second pitch — leave the number and stop talking.
-      fallbackText: closing.callClose(profile, {
+      fallbackText: closing.withPhoneAsk(closing.callClose(profile, {
         variant: recentClose ? 'departing_brief' : 'departing',
         seed: profile.messageCount || 0,
-      }),
+      }), profile),
+      appendContactAsk: noNumber,
       escalate: false,
       closeToCall: true,
     };
@@ -207,8 +260,10 @@ function decide({ analysis, profile, text, recentClose = false }) {
       action: ACTIONS.CLOSE,
       reason: 'customer signalled readiness',
       directive: 'הלקוח מוכן. הסבר בשורה מה כוללת שיחת הייעוץ, ואז סגור מועד — ' +
-                 'שתי אפשרויות זמן קונקרטיות, לא "בהקדם".',
-      fallbackText: `${faq.get('consultation')}\n\n` + closing.callClose(profile),
+                 'שתי אפשרויות זמן קונקרטיות, לא "בהקדם".' + PHONE_RIDER,
+      fallbackText: closing.withPhoneAsk(
+        `${faq.get('consultation')}\n\n` + closing.callClose(profile), profile),
+      appendContactAsk: noNumber,
       escalate: false,
     };
   }
@@ -242,7 +297,10 @@ function decide({ analysis, profile, text, recentClose = false }) {
   //     signal — nobody types their full name to a bot they intend to ignore.
   //     The 70-point threshold above never fires for these leads, which is
   //     precisely why two of them walked away unasked.
-  if (needsPhone && !recentClose && contactAttempts < 3) {
+  // A recent close no longer silences this. It used to: `!recentClose` meant
+  // that the moment a lead agreed to a time — the warmest turn in the whole
+  // conversation — the number was never asked for. Three leads on 14–17 Sep.
+  if (needsPhone && contactAttempts < 3) {
     return {
       action: ACTIONS.REQUEST_CONTACT,
       reason: 'name known, phone missing',

@@ -228,9 +228,12 @@ async function compose(analysis, profile, history = [], directive = null) {
     countCall();
     const res = await client.messages.create({
       model: pickModel(analysis),
-      // WhatsApp replies should be short anyway — a smaller cap is both
-      // faster and a useful nudge against wall-of-text answers.
-      max_tokens: 450,
+      // WhatsApp replies should be short, and a small cap nudges the model
+      // that way — but 450 was cutting real answers off mid-sentence. קרן
+      // שרייבר was told "מכאן שלושה מסלולים:" and the list never arrived;
+      // אפרים got "יש לך דרך לברר את השנה הזו מהמסמ". Brevity is the prompt's
+      // job (see VOICE); the cap is only there to stop a runaway.
+      max_tokens: 700,
       system: prompts.composeSystem(profile, history, passages),
       messages: [{
         role: 'user',
@@ -251,8 +254,18 @@ async function compose(analysis, profile, history = [], directive = null) {
       }],
     });
 
-    const text = (res.content?.[0]?.text || '').trim();
+    let text = (res.content?.[0]?.text || '').trim();
     if (!text) return null;
+
+    // Hit the ceiling anyway? Then the last sentence is half-written. Send what
+    // is whole and drop the fragment; a reply that stops mid-word reads as a
+    // broken system, and the customer has to guess what was coming.
+    if (res.stop_reason === 'max_tokens') {
+      const trimmed = trimToWholeSentence(text);
+      console.warn(`✂️  Reply hit the token cap — trimmed ${text.length - trimmed.length} chars`);
+      if (!trimmed) return null;                  // nothing whole to send
+      text = trimmed;
+    }
 
     const model = pickModel(analysis);
     lastCompose = {
@@ -504,6 +517,63 @@ function claimsShortTrack(text, profile) {
   return !kept;
 }
 
+/**
+ * "No generation limit" belongs to one route only.
+ *
+ * הסדרת רישום — where the citizenship was never lost — carries no generation
+ * limit. Restoration does: Article 10 reaches grandchildren, Article 11 reaches
+ * great-grandchildren. The prompt has forbidden mixing them since 10 Sep and
+ * the mix kept happening: משה was told "היא חוזרת בשיקום, ללא מגבלה לדורות",
+ * and ליאורה was told her route was השבת אזרחות and then, four lines later,
+ * "וללא כל מגבלת דורות". Both are wrong, and both went out as the firm's
+ * professional opinion.
+ */
+const NO_GENERATION_LIMIT = /(?:ללא|בלי|אין)\s+(?:כל\s+)?מגבל(?:ה|ת|ות)\s+ל?דורות/;
+const REGISTRATION_ROUTE = /(?:הסדרת\s+רישום|מסלול\s+ה?הסדרה|הליך\s+ה?הסדרה)/;
+const RESTORATION_ROUTE = /(?:השבת\s+אזרחות|שיקום\s+אזרחות|בשיקום|סעיף\s*1[01])/;
+
+function mixesGenerationLimit(text) {
+  if (!NO_GENERATION_LIMIT.test(text)) return false;
+  if (RESTORATION_ROUTE.test(text)) return true;        // named the wrong route
+  return !REGISTRATION_ROUTE.test(text);                // or named no route at all
+}
+
+/**
+ * Certainty about THIS family's eligibility.
+ *
+ * Only the Romanian authorities decide. "הילדים שלך בוודאות זכאים" went to a
+ * lead on 12 Sep whose grandfather's birthplace was not even established.
+ */
+const CERTAIN_ELIGIBILITY = [
+  /בוודאות\s+(?:זכא|יכול|מגיע|בתמונה)/,
+  /זכא(?:י|ים|ית|יות)\s+בוודאות/,
+  /בטוח\s+ש(?:את[הם]?|יש\s+לך|הילדים)/,
+  /אין\s+ספק\s+ש(?:את[הם]?|הילדים|יש\s+לך)/,
+];
+
+function claimsCertainEligibility(text) {
+  if (!ABOUT_THIS_LEAD.test(text)) return false;
+  return CERTAIN_ELIGIBILITY.some(re => re.test(text));
+}
+
+/**
+ * Cut a truncated reply back to its last complete sentence.
+ *
+ * Also drops a trailing line that opens a list and never delivers it
+ * ("מכאן שלושה מסלולים:"), which is worse than saying nothing.
+ */
+function trimToWholeSentence(text) {
+  let t = String(text || '').trimEnd();
+  const lastEnd = Math.max(
+    t.lastIndexOf('.'), t.lastIndexOf('!'), t.lastIndexOf('?'),
+    t.lastIndexOf('🙂'), t.lastIndexOf('👍'),
+  );
+  if (lastEnd > 0) t = t.slice(0, lastEnd + 1);
+  // A dangling "…:" promises something that isn't there.
+  t = t.replace(/\n[^\n]*:\s*$/, '').trimEnd();
+  return t.length >= 40 ? t : '';
+}
+
 function enforceGuardrails(text, profile = null) {
   if (profile && claimsRouteWithoutPlace(text, profile)) {
     console.warn('🛑 Guardrail: route asserted without a birthplace — 10 vs 11 is undecided');
@@ -532,6 +602,16 @@ function enforceGuardrails(text, profile = null) {
       console.warn('🛑 Guardrail: outcome promise in AI reply');
       return null;
     }
+  }
+  // Route attributes pinned to the wrong route.
+  if (mixesGenerationLimit(text)) {
+    console.warn('🛑 Guardrail: "no generation limit" claimed outside הסדרת רישום');
+    return null;
+  }
+  // Certainty the Romanian authorities have not given us.
+  if (claimsCertainEligibility(text)) {
+    console.warn('🛑 Guardrail: eligibility asserted as certain for this lead');
+    return null;
   }
   // A clock on a human we do not control.
   if (promisesResponseTime(text)) {
@@ -590,6 +670,7 @@ module.exports = {
   compose,
   updateSummary,
   enforceGuardrails,
+  trimToWholeSentence,
   parseJson,
   getLastCompose,
   clearLastCompose,

@@ -52,8 +52,30 @@ const OPENING = {
      '*באיזה דור זה אצלכם?* ואם לא ידוע במדויק — כתבו \u00AB‏לא בטוח\u00BB ונתקדם מכאן.',
 };
 
-function opening(variant) {
-  return OPENING[variant] || OPENING.A;
+/**
+ * The same two openings in English.
+ *
+ * The ad runs an English arm — four conversations in the 10–24 Sep window
+ * opened with "Hello! Can I get more info on this?" — and every one of them
+ * was answered in Hebrew and died within three messages. Nothing in the code
+ * had ever looked at the language of the incoming message.
+ */
+const OPENING_EN = {
+  A: "Hi! \u{1F44B} You've reached the office of Yehonatan Pudim, Attorney at Law — " +
+     '*your gateway to Romania*.\n\n' +
+     "Let's see where you stand. *Who in your family was born in Romania?* " +
+     '(parent / grandparent)',
+
+  B: "Hi! \u{1F44B} This is the office of Yehonatan Pudim, Attorney at Law.\n\n" +
+     'The basic rule: if a parent, grandparent or great-grandparent of yours was ' +
+     'born in Romania, you *may* be eligible — even if the details are unclear.\n\n' +
+     '*Which generation is it in your family?* If you are not sure, just write ' +
+     '«not sure» and we will take it from there.',
+};
+
+function opening(variant, lang) {
+  const table = lang === 'en' ? OPENING_EN : OPENING;
+  return table[variant] || table.A;
 }
 
-module.exports = { VARIANTS, assign, opening, OPENING };
+module.exports = { VARIANTS, assign, opening, OPENING, OPENING_EN };

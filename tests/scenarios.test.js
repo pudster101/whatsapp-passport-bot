@@ -1045,6 +1045,36 @@ async function run() {
       !dashboard.waitingForCallback({ minHours: 12 }).some(l => l.phone === '972500000207'));
   }
 
+  // ── Aggregate stats for the marketing system ───────────────────────────────
+  {
+    const statsApi = require('../src/admin/stats');
+    const mk = (phone, intent, adId, saved) => {
+      const pr = leadProfile.create(phone);
+      pr.name = 'שם פרטי ' + phone; pr.clientPhone = '0500000999';
+      pr.buyingIntent = intent;
+      pr.attribution = adId ? { sourceId: adId, headline: 'H-' + adId, ctwaClid: 'clid-' + phone } : undefined;
+      storage.setConversation(phone, { profile: pr, history: [], startedAt: new Date().toISOString(), leadSaved: !!saved });
+      created.push(phone);
+    };
+    mk('972500000301', 80, 'AD1', true);
+    mk('972500000302', 20, 'AD1', false);
+    mk('972500000303', 90, 'AD2', true);
+    mk('972547787804', 100, 'AD1', true); // the owner's own number: never a lead
+    const s = statsApi.summary({ days: 1 });
+    const ad1 = s.byAd.find(a => a.adId === 'AD1');
+    const ad2 = s.byAd.find(a => a.adId === 'AD2');
+    check('stats: per-ad conversation counts', ad1 && ad1.conversations === 2 && ad2 && ad2.conversations === 1);
+    check('stats: the owner\'s own number is excluded', s.excluded.internalConversations >= 1 && ad1.conversations === 2);
+    check('stats: qualified share uses the hot-lead threshold', ad1.qualified === 1 && ad1.qualifiedShare === 0.5);
+    check('stats: average buying intent per ad', ad1.averageBuyingIntent === 50);
+    const raw = JSON.stringify(s);
+    check('stats: no names, phone numbers or clids leak into the output',
+      !raw.includes('שם פרטי') && !raw.includes('0500000999') && !raw.includes('97250000030') && !raw.includes('clid-'));
+    let threw = false;
+    try { statsApi.summary({ since: 'not-a-date' }); } catch { threw = true; }
+    check('stats: a bad date is rejected, not guessed', threw);
+  }
+
   // ── Summary ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(52)}`);
   console.log(`\x1b[1mResults: ${passed} passed, ${failed} failed\x1b[0m`);

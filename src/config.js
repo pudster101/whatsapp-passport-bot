@@ -24,6 +24,9 @@ module.exports = {
   // Admin endpoints are DISABLED unless this token is set. Call them with
   // header:  Authorization: Bearer <ADMIN_TOKEN>   or  ?token=<ADMIN_TOKEN>
   ADMIN_TOKEN: process.env.ADMIN_TOKEN || '',
+  // Read-only token for /stats/summary — aggregate counts only, no client data.
+  // Unlike ADMIN_TOKEN it cannot open any other endpoint.
+  STATS_TOKEN: process.env.STATS_TOKEN,
 
   // ─── AI sales brain ─────────────────────────────────────────────────────
   // Without a key the bot runs in scripted mode exactly as before.

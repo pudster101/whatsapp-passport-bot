@@ -12,6 +12,7 @@ const { handleMessage } = require('./flows');
 const handoff = require('./sales/handoff');
 const followup = require('./followup/scheduler');
 const dashboard = require('./admin/dashboard');
+const statsApi = require('./admin/stats');
 
 const app = express();
 
@@ -69,6 +70,23 @@ function requireAdmin(req, res, next) {
   const bearer = header.startsWith('Bearer ') ? header.slice(7) : null;
   const token = bearer || req.query.token;
   if (token !== config.ADMIN_TOKEN) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+}
+
+// Separate, read-only token for the aggregate stats endpoint. Compared in
+// constant time and accepted ONLY as a Bearer header (never in a URL, which
+// ends up in logs). It opens /stats/summary and nothing else.
+function requireStats(req, res, next) {
+  if (!config.STATS_TOKEN) {
+    return res.status(503).json({ error: 'Stats API disabled. Set STATS_TOKEN in the environment.' });
+  }
+  const header = req.get('authorization') || '';
+  const given = header.startsWith('Bearer ') ? header.slice(7) : '';
+  const a = Buffer.from(given);
+  const b = Buffer.from(config.STATS_TOKEN);
+  if (a.length !== b.length || !require('crypto').timingSafeEqual(a, b)) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   next();
@@ -147,6 +165,25 @@ app.post('/webhook', async (req, res) => {
 });
 
 // ─── Admin API ────────────────────────────────────────────────────────────────
+
+/**
+ * Aggregate lead statistics for the marketing system — counts and averages per
+ * ad, nothing about any person.
+ *   GET /stats/summary?since=2026-10-01            (Authorization: Bearer STATS_TOKEN)
+ *   GET /stats/summary?days=30
+ */
+app.get('/stats/summary', requireStats, (req, res) => {
+  try {
+    const days = parseInt(req.query.days, 10);
+    res.json(statsApi.summary({
+      since: req.query.since,
+      until: req.query.until,
+      days: Number.isFinite(days) ? days : undefined,
+    }));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
 
 app.get('/admin/leads', requireAdmin, async (req, res) => {
   try {

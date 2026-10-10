@@ -27,6 +27,7 @@ const retrieve = require('./kb/retrieve');
 const leadProfile = require('./sales/leadProfile');
 const stages = require('./sales/stages');
 const experiment = require('./sales/experiment');
+const meeting = require('./sales/meeting');
 const scoring = require('./sales/scoring');
 const objections = require('./sales/objections');
 const nextAction = require('./sales/nextAction');
@@ -732,6 +733,24 @@ async function handleFreeText(phone, session, text, opts = {}) {
   if (!hadContact && leadProfile.hasContactDetails(p)) {
     p.stage = stages.shouldAdvance(p.stage, 'CONVERSION');
     session.state = 'COMPLETE';
+
+    // The details were just collected in order to hold a meeting slot. Asking
+    // "morning or afternoon for a phone call?" here contradicts the booking the
+    // customer is in the middle of — go straight to the times.
+    const pending = leadProfile.ensureMeeting(p);
+    if (pending.accepted && !['requested', 'confirmed'].includes(pending.status)) {
+      const slots = meeting.nextSlots({
+        count: 2, taken: meeting.takenSlots(storage.getAllConversations()),
+      });
+      pending.offered = slots;
+      pending.status = slots.length ? 'slots_proposed' : 'offered';
+      await reply(phone, session,
+        `🎉 מצוין, ${p.name} — רשמתי.\n\n${meeting.slotPrompt(slots, pending.mode)}`);
+      await maybeSaveLead(phone, session);
+      save(phone, session);
+      return;
+    }
+
     const isCourse = p.interest?.includes('b1_course');
     // If a time was already agreed earlier in the conversation, asking again is
     // what made a lead on 5 Sep repeat "בבוקר" three times.
@@ -746,6 +765,40 @@ async function handleFreeText(phone, session, text, opts = {}) {
     await maybeSaveLead(phone, session);
     save(phone, session);
     return;
+  }
+
+  // 3b½. The customer is picking one of the meeting slots we put on the table.
+  //
+  //      Deterministic on purpose: the time, the address and the navigation
+  //      links have to be exactly right, and nothing about them is worth
+  //      letting a model paraphrase. Anything that is NOT a slot choice falls
+  //      through to the normal pipeline — including "I'm abroad", which the
+  //      decision layer turns into a video meeting.
+  const mtg = leadProfile.ensureMeeting(p);
+  if (mtg.status === 'slots_proposed' && (mtg.offered || []).length) {
+    const picked = meeting.parseSlotChoice(text, mtg.offered);
+    if (picked) {
+      mtg.status = 'requested';
+      mtg.slotIso = picked.iso;
+      mtg.slotLabel = picked.label;
+      mtg.requestedAt = new Date().toISOString();
+      p.stage = stages.shouldAdvance(p.stage, 'HIGH_INTENT');
+
+      storage.logEvent(phone, 'meeting_requested', {
+        slot: picked.iso, label: picked.label, mode: mtg.mode,
+      });
+      console.log(`📅 [${phone}] meeting requested — ${picked.label} (${mtg.mode})`);
+
+      // A meeting with no number to confirm it on is not a meeting.
+      const body = closing.withPhoneAsk(meeting.pendingText(p, picked, mtg.mode), p);
+      await reply(phone, session, body);
+
+      await maybeSaveLead(phone, session);
+      handoff.notifyMeetingRequest(p, picked, mtg.mode)
+        .catch(e => console.warn('⚠️ meeting notify:', e.message));
+      save(phone, session);
+      return;
+    }
   }
 
   // 3c. Everything is done — details captured and a time agreed. From here the
@@ -773,9 +826,37 @@ async function handleFreeText(phone, session, text, opts = {}) {
   p.nextAction = decision.action;
   console.log(`🎯 [${phone}] action=${decision.action} (${decision.reason})`);
 
+  // 4b. Record where the meeting stands, and fill in the real slots.
+  if (decision.offerMeeting) {
+    mtg.status = 'offered';
+    mtg.mode = decision.meetingMode || 'office';
+    mtg.offeredAt = new Date().toISOString();
+    storage.logEvent(phone, 'meeting_offered', { mode: mtg.mode });
+  }
+  if (decision.meetingAccepted) mtg.accepted = true;
+  if (decision.meetingMode) mtg.mode = decision.meetingMode;
+  if (decision.proposeSlots) {
+    mtg.mode = decision.meetingMode || mtg.mode || 'office';
+    const slots = meeting.nextSlots({
+      count: 2,
+      taken: meeting.takenSlots(storage.getAllConversations()),
+    });
+    mtg.offered = slots;
+    mtg.status = slots.length ? 'slots_proposed' : 'offered';
+    // The model never invents a time, an address or a map link: this turn is
+    // scripted from the real availability.
+    decision.fallbackText = `מעולה. 🙂\n\n${meeting.slotPrompt(slots, mtg.mode)}`;
+    decision.forceFallback = true;
+  }
+  if (decision.meetingDeclined) {
+    mtg.status = 'declined';
+    mtg.declines = (mtg.declines || 0) + 1;
+    storage.logEvent(phone, 'meeting_declined', { mode: mtg.mode });
+  }
+
   // 5. Compose the reply — AI first, scripted fallback
   let replyText = null;
-  if (aiWillCompose) {
+  if (aiWillCompose && !decision.forceFallback) {
     replyText = await brain.compose(analysis, p, session.history || [], decision.directive);
   }
   if (!replyText) {
@@ -1129,7 +1210,7 @@ const NAME_RE = /(?:קוראים לי|שמי|השם שלי|אני נקרא(?:ת)
  * name again on the next turn, and never got as far as asking for a number.
  * Two leads on 8 Sep ended exactly there.
  */
-const NAME_ASK_RE = /(מה שמך|שמך המלא|איך קוראים לך|מה השם שלך|איך לפנות אליך)/;
+const NAME_ASK_RE = /(מה שמך|שמך המלא|השם המלא|איך קוראים לך|מה השם שלך|איך לפנות אליך)/;
 const BARE_NAME_RE = /^[֐-׿A-Za-z]{2,}(?:[\s'׳"״-]+[֐-׿A-Za-z]{2,}){0,2}$/;
 /** Short replies that are answers to something else, never a name. */
 const NOT_A_NAME = new Set([
@@ -1137,11 +1218,15 @@ const NOT_A_NAME = new Set([
   'אהלן', 'בוקר טוב', 'ערב טוב', 'למה', 'מה', 'איך', 'כמה', 'מתי', 'רגע',
   'סבתא', 'סבא', 'אמא', 'אבא', 'הורה', 'אני', 'רומניה', 'דרכון', 'אזרחות',
   'לא יודע', 'לא יודעת', 'לא בטוח', 'אולי', 'בטח', 'נשמע טוב',
+  // Days and times get typed in answer to a slot question, never as a name.
+  'ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת', 'מחר', 'היום',
+  'בוקר', 'צהריים', 'ערב', 'אחהצ', 'הראשון', 'השני',
 ]);
 
 function looksLikeBareName(text) {
   const t = String(text).trim();
   if (!t || t.length > 30 || /\d|[?@]/.test(t)) return false;
+  if (/^יום\s/.test(t)) return false;              // "יום ראשון" is a slot, not a name
   if (NOT_A_NAME.has(t.replace(/[.!]/g, ''))) return false;
   return BARE_NAME_RE.test(t);
 }

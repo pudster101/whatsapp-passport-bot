@@ -11,6 +11,7 @@ const leadProfile = require('./leadProfile');
 const objections = require('./objections');
 const stages = require('./stages');
 const scoring = require('./scoring');
+const meeting = require('./meeting');
 
 /** Send to every configured agent phone. Template first, free text fallback. */
 async function notifyAgents(text, templateName = null, params = []) {
@@ -163,6 +164,28 @@ async function notifyHandoff(profile, reason, opts = {}) {
   );
 }
 
+/**
+ * A lead asked for a meeting. This is the most valuable alert the bot sends:
+ * someone agreed to give up an evening and come to the office with documents.
+ * It needs confirming the same day, or the slot and the intent both go cold.
+ */
+async function notifyMeetingRequest(profile, slot, mode = 'office') {
+  const where = mode === 'video' ? 'פגישת וידאו' : `פגישה במשרד (${meeting.OFFICE.address})`;
+  const text = leadCard(profile, {
+    title: `📅 *בקשת ${where}*`,
+    recommendation:
+      `*${slot.label}* — ממתין לאישור שלך.\n` +
+      (profile.clientPhone
+        ? 'אשר ואשלח ללקוח את הכתובת, הניווט ורשימת המסמכים.'
+        : '⚠️ עדיין אין מספר טלפון בתיק — הבוט ממשיך לבקש אותו.'),
+  });
+  return notifyAgents(
+    text,
+    'pudim_meeting_request',
+    [profile.name || 'לא נאסף', slot.label, profile.clientPhone || '—']
+  );
+}
+
 function recommendFor(profile) {
   const score = profile.buyingIntent || 0;
   const e = profile.eligibility || {};
@@ -181,5 +204,6 @@ module.exports = {
   notifyNewLead,
   notifyHotLead,
   notifyHandoff,
+  notifyMeetingRequest,
   leadCard,
 };

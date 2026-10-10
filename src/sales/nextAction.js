@@ -9,6 +9,7 @@ const objections = require('./objections');
 const faq = require('../kb/faq');
 const config = require('../config');
 const closing = require('./closing');
+const meeting = require('./meeting');
 
 const ACTIONS = {
   ANSWER_QUESTION:    'answer_question',
@@ -22,6 +23,8 @@ const ACTIONS = {
   ESCALATE_HUMAN:     'escalate_human',
   CLOSE:              'close',
   CLOSE_TO_CALL:      'close_to_call',
+  OFFER_MEETING:      'offer_meeting',
+  PROPOSE_SLOTS:      'propose_slots',
 };
 
 /**
@@ -252,6 +255,109 @@ function decide({ analysis, profile, text, recentClose = false }) {
       appendContactAsk: wantsContact,
       escalate: false,
     };
+  }
+
+  // ── 4b. The office meeting ─────────────────────────────────────────────────
+  //
+  // This is the goal of the conversation, and it sits above the generic close
+  // on purpose: once the route is clear, "let's sit down with the documents"
+  // beats "let's have a call" at every measure the firm cares about. A lead who
+  // gives up an evening and drives to Ashkenazi 21 has decided.
+  //
+  // The phone call is not abandoned — it is what we fall back to the moment the
+  // customer shows they are not coming in.
+  {
+    const mtg = profile.meeting || {};
+
+    // They were offered a meeting and answered.
+    if (mtg.status === 'offered' || mtg.status === 'slots_proposed') {
+      if (meeting.signalsMeetingRefusal(text)) {
+        return {
+          action: ACTIONS.CLOSE_TO_CALL,
+          reason: 'declined the office meeting — falling back to a call',
+          directive:
+            'הלקוח העדיף לא להגיע למשרד. אל תתעקש ואל תחזור על ההצעה. ' +
+            'קבל את זה במשפט אחד, והצע במקום זה שיחה קצרה עם עו״ד פודים עם שתי ' +
+            'אפשרויות זמן קונקרטיות.' + PHONE_RIDER,
+          fallbackText: closing.withPhoneAsk(
+            closing.callClose(profile, { variant: 'ask_time', seed: profile.messageCount || 0 }),
+            profile),
+          meetingDeclined: true,
+          escalate: false,
+        };
+      }
+
+      // Acceptance is remembered. A lead who says "yes" and is then asked for
+      // a phone number does not say "yes" a second time, and without this the
+      // booking stalled there — offered, accepted, and never given a time.
+      const accepted = !!mtg.accepted
+        || meeting.signalsMeetingInterest(text) || meeting.signalsCannotCome(text);
+
+      if (accepted) {
+        const mode = (mtg.mode === 'video' || meeting.signalsCannotCome(text))
+          ? 'video' : 'office';
+
+        // They said yes but we cannot reach them. Ask for the details AS THE
+        // BOOKING STEP — "so I can hold the slot" is a reason the customer
+        // accepts, where a bare "what is your name?" in the middle of a
+        // booking reads as the bot losing the thread.
+        if (!leadProfile.hasContactDetails(profile)) {
+          const missing = !profile.name ? 'שם מלא' : 'מספר טלפון';
+          return {
+            action: ACTIONS.REQUEST_CONTACT,
+            reason: `meeting accepted — need ${!profile.name ? 'name' : 'phone'} to hold the slot`,
+            directive:
+              `הלקוח הסכים לפגישה. בקש ${missing} *כדי לשריין את המועד* — זו הסיבה, ואמור אותה. ` +
+              'בקשה אחת בלבד, משפט אחד, בלי לחזור על ההצעה ובלי לתת מועדים עדיין.',
+            fallbackText: !profile.name
+              ? 'מעולה. 🙂\n\nכדי לשריין לך את המועד — *מה השם המלא שלך?*'
+              : `נהדר${profile.name ? `, ${profile.name}` : ''}. ` +
+                'כדי לשריין את המועד — *מה מספר הטלפון שלך?*',
+            escalate: false,
+            contactAsk: true,
+            meetingAccepted: true,
+            meetingMode: mode,
+          };
+        }
+
+        return {
+          action: ACTIONS.PROPOSE_SLOTS,
+          reason: `meeting accepted (${mode})`,
+          directive:
+            (mode === 'video'
+              ? 'הלקוח לא יכול להגיע פיזית. הצע פגישת וידאו — אותה פגישה בדיוק, לא גרסה מוקטנת. '
+              : 'הלקוח מעוניין בפגישה במשרד. ') +
+            'תן *שתי אפשרויות מועד קונקרטיות בלבד* מתוך אלה שיסופקו לך, ובקש שיבחר אחת. ' +
+            'אל תמציא מועדים משלך, אל תבטיח שהמועד סגור, ואל תנקוב בעלות.' + PHONE_RIDER,
+          fallbackText: null,          // flows fills this with the real slots
+          proposeSlots: true,
+          meetingAccepted: true,
+          meetingMode: mode,
+          escalate: false,
+        };
+      }
+    }
+
+    // Not offered yet, and the route is finally clear enough to be worth an
+    // evening. isReadyForMeeting is stricter than isQualified on purpose:
+    // relative, place AND year of departure.
+    if (!mtg.status && meeting.isReadyForMeeting(profile)) {
+      const mode = meeting.signalsCannotCome(text) ? 'video' : 'office';
+      return {
+        action: ACTIONS.OFFER_MEETING,
+        reason: `route is clear — offering a ${mode} meeting`,
+        directive:
+          `הגיע הרגע להציע *פגישה עם עו״ד פודים* — ${mode === 'video' ? 'בוידאו' : 'במשרד'}. ` +
+          'זו המטרה של השיחה, לא שיחת טלפון. מכור את זה דרך מה שהלקוח כבר אמר: ' +
+          'עוברים יחד על המסמכים שיש, ועו״ד פודים אומר בדיוק מה חסר ומאיפה מאתרים אותו. ' +
+          'ציין שזה ללא עלות וללא התחייבות. אל תנקוב בסכום, אל תבטיח תוצאה, ' +
+          'ואל תיתן כתובת או מועד שלא נמסרו לך.' + PHONE_RIDER,
+        fallbackText: meeting.offerText(profile, mode),
+        offerMeeting: true,
+        meetingMode: mode,
+        escalate: false,
+      };
+    }
   }
 
   // 5. Ready to start / very high intent — close

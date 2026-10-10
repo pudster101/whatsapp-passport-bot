@@ -1075,6 +1075,173 @@ async function run() {
     check('stats: a bad date is rejected, not guessed', threw);
   }
 
+  // ── 34. The office meeting ─────────────────────────────────────────────────
+  section('34. Meeting slots');
+  {
+    const meeting = require('../src/sales/meeting');
+    const SUN_MORNING = Date.parse('2026-10-11T06:00:00Z');   // Sunday 09:00 Israel
+    const THU_EVENING = Date.parse('2026-10-08T15:00:00Z');   // Thursday 18:00 Israel
+
+    const slots = meeting.nextSlots({ now: SUN_MORNING });
+    check('two slots are offered', slots.length === 2);
+    check('the first is today, 17:00', /ראשון.*17:00/.test(slots[0].label), slots[0].label);
+    check('the second is a different day',
+      slots[0].label.slice(0, 10) !== slots[1].label.slice(0, 10), slots.map(s => s.label).join(' | '));
+    check('no slot is in the past',
+      slots.every(s => s.at > SUN_MORNING));
+    check('every slot is inside the 17:00–19:00 window',
+      meeting.nextSlots({ count: 8, now: SUN_MORNING })
+        .every(s => meeting.MEETING_HOURS.includes(s.hour)));
+    check('no slot falls on Friday or Saturday',
+      meeting.nextSlots({ count: 10, now: THU_EVENING })
+        .every(s => ![5, 6].includes(new Date(s.at).getUTCDay()) || s.hour >= 14),
+      'weekend slot offered');
+    check('Thursday evening rolls over to Sunday',
+      /ראשון/.test(meeting.nextSlots({ now: THU_EVENING })[0].label),
+      meeting.nextSlots({ now: THU_EVENING })[0].label);
+    check('a slot needs lead time — 17:00 is not offered at 16:00',
+      !meeting.nextSlots({ now: Date.parse('2026-10-11T13:00:00Z') })
+        .some(s => /11\.10/.test(s.label)));
+    check('a slot another lead holds is not offered twice', (() => {
+      const taken = meeting.nextSlots({ now: SUN_MORNING })[0].iso;
+      return !meeting.nextSlots({ now: SUN_MORNING, taken: [taken] })
+        .some(s => s.iso === taken);
+    })());
+
+    // Reading the answer.
+    check('"יום שני" picks Monday',
+      meeting.parseSlotChoice('יום שני מתאים לי', slots)?.label === slots[1].label);
+    check('"השני" means the second option, not Monday',
+      meeting.parseSlotChoice('השני', slots)?.label === slots[1].label);
+    check('"הראשון" means the first option',
+      meeting.parseSlotChoice('הראשון בבקשה', slots)?.label === slots[0].label);
+    check('a day we never offered books nothing',
+      meeting.parseSlotChoice('יום רביעי ב-17:00', slots) === null);
+    check('an unrelated message books nothing',
+      meeting.parseSlotChoice('אני עוד אחשוב על זה', slots) === null);
+
+    check('the gate needs relative, place AND year', (() => {
+      const p = leadProfile.create('972500000301');
+      p.eligibility = { ancestor: 'סבתא', birthPlace: 'יאשי' };
+      if (meeting.isReadyForMeeting(p)) return false;
+      p.eligibility.leftYear = '1961';
+      return meeting.isReadyForMeeting(p);
+    })());
+    check('someone who already said no is not asked again', (() => {
+      const p = leadProfile.create('972500000302');
+      p.eligibility = { ancestor: 'סבא', birthPlace: 'בוקרשט', leftYear: '1950' };
+      p.meeting = { ...p.meeting, declines: 1 };
+      return !meeting.isReadyForMeeting(p);
+    })());
+
+    check('every message carries the office address and both map links', (() => {
+      const p = leadProfile.create('972500000303');
+      const t = meeting.pendingText(p, slots[0]) + meeting.confirmedText(p, slots[0]) +
+                meeting.reminderText(p, slots[0]);
+      return t.includes('אשכנזי 21') && t.includes('google.com/maps') && t.includes('waze.com');
+    })());
+    check('a video meeting offers no street address', (() => {
+      const p = leadProfile.create('972500000304');
+      return !meeting.confirmedText(p, slots[0], 'video').includes('אשכנזי 21');
+    })());
+    check('no message promises a price or a response time', (() => {
+      const p = leadProfile.create('972500000305');
+      const t = meeting.offerText(p) + meeting.pendingText(p, slots[0]) +
+                meeting.slotPrompt(slots) + meeting.confirmedText(p, slots[0]);
+      return !/\d{3,}\s*(₪|ש"ח|שקל)/.test(t) && !/דקות ספורות|תוך .{0,6}דקות/.test(t);
+    })());
+    check('the bot never calls an unconfirmed slot final',
+      !/מאושר|סגור סופית/.test(meeting.pendingText(leadProfile.create('972500000306'), slots[0])));
+  }
+
+  section('35. Booking a meeting end to end');
+  {
+    const meeting = require('../src/sales/meeting');
+    const phone = newPhone();
+    await say(phone, TRIGGER);
+    await say(phone, 'סבתא שלי');
+    await say(phone, 'היא נולדה ביאשי');
+    const offer = await say(phone, 'עלתה ב-1961');
+
+    check('a clear route triggers the meeting offer',
+      /פגישה/.test(offer) && /אשכנזי 21/.test(offer), offer.slice(0, 80));
+    check('the offer says it costs nothing', /ללא עלות/.test(offer));
+    check('and the meeting is recorded as offered',
+      profileOf(phone)?.meeting?.status === 'offered');
+
+    const afterYes = await say(phone, 'כן בשמחה');
+    check('saying yes asks for the details to hold the slot',
+      /שם|טלפון/.test(afterYes) && /לשריין/.test(afterYes), afterYes.slice(0, 70));
+
+    await say(phone, 'דנה לוי');
+    const withSlots = await say(phone, '0541234567');
+    check('once reachable, real times are offered',
+      /בשעה 1[78]:00/.test(withSlots), withSlots.slice(0, 100));
+    check('the slots came from the 17:00–19:00 window',
+      (profileOf(phone)?.meeting?.offered || []).every(s => [17, 18].includes(s.hour)));
+
+    const booked = await say(phone, 'הראשון');
+    check('picking one records the request',
+      profileOf(phone)?.meeting?.status === 'requested');
+    check('and the reply carries the address and navigation',
+      /אשכנזי 21/.test(booked) && /waze\.com/.test(booked));
+    check('and the document list', /תעודות לידה/.test(booked));
+    check('nothing was promised as confirmed',
+      /לאישור|אעביר/.test(booked) && !/^✅/.test(booked));
+    check('the lead was still captured as a lead',
+      !!profileOf(phone)?.name && !!profileOf(phone)?.clientPhone);
+
+    // The whole point of the feature, as a number.
+    const w = await dashboard.weekly(7);
+    check('the weekly page counts meetings',
+      typeof w.totals.meetingsOffered === 'number'
+      && typeof w.totals.meetingsRequested === 'number'
+      && w.totals.meetingsRequested >= 1, JSON.stringify(w.totals.meetingsRequested));
+    check('and lists them with the slot',
+      dashboard.meetings().some(m => m.phone === phone && m.status === 'requested'));
+  }
+
+  section('36. When the customer cannot come in');
+  {
+    const phone = newPhone();
+    await say(phone, TRIGGER);
+    await say(phone, 'סבא שלי');
+    await say(phone, 'נולד בבוקרשט');
+    await say(phone, 'עזב ב-1950');
+    const abroad = await say(phone, 'אני בחו״ל עד סוף החודש');
+    check('being abroad turns it into a video meeting, not a lesser offer',
+      profileOf(phone)?.meeting?.mode === 'video' || /וידאו/.test(abroad),
+      abroad.slice(0, 70));
+
+    await say(phone, 'יעל ברק');
+    const slots = await say(phone, '0537654321');
+    check('a video meeting still offers real times', /בשעה 1[78]:00/.test(slots));
+    check('and does not send anyone to an address',
+      !/אשכנזי/.test(slots) || /וידאו/.test(slots), slots.slice(0, 80));
+    check('the mode stuck across turns', profileOf(phone)?.meeting?.mode === 'video');
+  }
+
+  section('37. Declining the meeting');
+  {
+    const phone = newPhone();
+    await say(phone, TRIGGER);
+    await say(phone, 'אמא שלי');
+    await say(phone, 'נולדה בקלוז');
+    await say(phone, 'עזבה ב-1964');
+    const no = await say(phone, 'לא נוח לי להגיע, עדיף טלפון');
+
+    check('a refusal is accepted and turned into a call',
+      /שיחה|יחזור|טלפון|03-5517801/.test(no), no.slice(0, 80));
+    check('it is recorded as declined',
+      profileOf(phone)?.meeting?.status === 'declined');
+    check('and the bot does not ask a second time', (() => {
+      const meeting = require('../src/sales/meeting');
+      return !meeting.isReadyForMeeting(profileOf(phone));
+    })());
+    check('the phone number is still pursued',
+      /מספר|טלפון/.test(no), no.slice(0, 80));
+  }
+
   // ── Summary ────────────────────────────────────────────────────────────────
   console.log(`\n${'═'.repeat(52)}`);
   console.log(`\x1b[1mResults: ${passed} passed, ${failed} failed\x1b[0m`);

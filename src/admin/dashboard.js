@@ -302,6 +302,7 @@ async function weekly(days = 7) {
       diedAtFirstMessage: diedTotal,
       diedShare: started ? Math.round((diedTotal / started) * 100) : null,
       unhandledHot: unhandled.length,
+      ...meetingTotals(events, conversations),
     },
     unhandledHot: unhandled.slice(0, 25),
     topQuestions: Object.entries(intentCounts)
@@ -388,4 +389,71 @@ function waitingForCallback({ minHours = 12, minScore = null } = {}) {
   return rows.sort((a, b) => b.hoursWaiting - a.hoursWaiting);
 }
 
-module.exports = { funnel, hotList, weekly, waitingForCallback };
+/**
+ * The meeting funnel, for the weekly page.
+ *
+ * The number that matters is not how many meetings were offered — it is how
+ * many of the leads who reached a clear route agreed to come in. That ratio is
+ * the whole point of the change.
+ */
+function meetingTotals(events = [], conversations = {}) {
+  const count = (type) => events.filter(e => e.type === type).length;
+
+  let readyForMeeting = 0;
+  for (const session of Object.values(conversations)) {
+    const e = session?.profile?.eligibility || {};
+    if (e.ancestor && e.birthPlace && e.leftYear) readyForMeeting++;
+  }
+
+  const offered = count('meeting_offered');
+  const requested = count('meeting_requested');
+  const confirmed = count('meeting_confirmed');
+
+  return {
+    meetingsOffered: offered,
+    meetingsRequested: requested,
+    meetingsConfirmed: confirmed,
+    meetingsDeclined: count('meeting_declined'),
+    meetingAcceptRate: offered ? Math.round((requested / offered) * 100) : null,
+    routeClearLeads: readyForMeeting,
+  };
+}
+
+/**
+ * Every meeting on the books, soonest first.
+ *
+ * Requested ones are the ones that need the owner: a slot nobody confirmed is
+ * a customer sitting at home wondering whether to drive over.
+ */
+function meetings({ includePast = false } = {}) {
+  const conversations = storage.getAllConversations();
+  const now = Date.now();
+  const rows = [];
+
+  for (const [phone, session] of Object.entries(conversations)) {
+    const p = session?.profile;
+    const m = p?.meeting;
+    if (!m?.slotIso) continue;
+    if (!['requested', 'confirmed'].includes(m.status)) continue;
+    const at = new Date(m.slotIso).getTime();
+    if (!includePast && at < now - 3600000) continue;
+
+    rows.push({
+      phone,
+      name: p.name || null,
+      clientPhone: p.clientPhone || null,
+      status: m.status,
+      mode: m.mode || 'office',
+      slotIso: m.slotIso,
+      slotLabel: m.slotLabel,
+      hoursUntil: Math.round((at - now) / 3600000),
+      score: p.buyingIntent || 0,
+      article: p.eligibility?.likelyArticle || null,
+      summary: p.conversationSummary || null,
+    });
+  }
+
+  return rows.sort((a, b) => new Date(a.slotIso) - new Date(b.slotIso));
+}
+
+module.exports = { funnel, hotList, weekly, waitingForCallback, meetings };

@@ -13,6 +13,7 @@ const handoff = require('./sales/handoff');
 const followup = require('./followup/scheduler');
 const dashboard = require('./admin/dashboard');
 const statsApi = require('./admin/stats');
+const meeting = require('./sales/meeting');
 
 const app = express();
 
@@ -361,6 +362,46 @@ app.get('/admin/handled', requireAdmin, (req, res) => {
     `<html lang="he" dir="rtl"><meta charset="utf-8"><body style="font-family:system-ui;padding:32px">
      <h2>✅ סומן כטופל</h2>
      <p>${session.profile.name || phone} לא יופיע יותר ברשימת הממתינים.</p></body></html>`);
+});
+
+/**
+ * Confirm a requested meeting, from the link in the alert.
+ *
+ * The bot never confirms a slot on its own — it asks, the office decides. One
+ * tap here books it and sends the customer the address, the navigation links
+ * and the document list.
+ */
+app.get('/admin/meeting/confirm', requireAdmin, async (req, res) => {
+  const phone = String(req.query.phone || '').replace(/\D/g, '');
+  const session = phone ? storage.getConversation(phone) : null;
+  const page = (title, body) => res.type('html').send(
+    `<html lang="he" dir="rtl"><meta charset="utf-8">
+     <meta name="viewport" content="width=device-width,initial-scale=1">
+     <body style="font-family:system-ui;padding:32px;line-height:1.7">
+     <h2>${title}</h2>${body}</body></html>`);
+
+  if (!session?.profile) return res.status(404).type('html').send('<h2>לא נמצאה שיחה</h2>');
+  const m = session.profile.meeting || {};
+  if (!m.slotIso) return page('אין פגישה מבוקשת ללקוח הזה', '');
+
+  m.status = 'confirmed';
+  m.confirmedAt = new Date().toISOString();
+  storage.setConversation(phone, session);
+  storage.logEvent(phone, 'meeting_confirmed', { slot: m.slotIso, mode: m.mode });
+
+  const slot = { iso: m.slotIso, label: m.slotLabel };
+  const sent = await wa.sendText(phone, meeting.confirmedText(session.profile, slot, m.mode))
+    .catch(() => false);
+
+  page(`✅ הפגישה אושרה — ${m.slotLabel}`,
+    sent
+      ? `<p>נשלחה ללקוח הודעת אישור עם הכתובת, הניווט ורשימת המסמכים.</p>`
+      : `<p style="color:#8c3a2e">הפגישה סומנה כמאושרת, אבל ההודעה ללקוח לא נמסרה —
+         ככל הנראה חלון 24 השעות מולו נסגר. שווה להתקשר אליו.</p>`);
+});
+
+app.get('/admin/meetings', requireAdmin, (req, res) => {
+  res.json(dashboard.meetings());
 });
 
 app.get('/admin/waiting', requireAdmin, (req, res) => {
@@ -743,6 +784,71 @@ function scheduleJobs() {
     }, { timezone: 'UTC' });
     console.log('⏰ Waiting-list alert scheduled (08:30 Israel, Sun–Thu)');
   }
+
+  // Meetings: the owner's list at 08:00, and the customer's reminder at 10:00.
+  if (config.AGENT_PHONES.length) {
+    cron.schedule('0 5 * * *', async () => {
+      try {
+        const rows = dashboard.meetings();
+        if (!rows.length) return;
+        const pending = rows.filter(r => r.status === 'requested');
+        const line = (r) =>
+          `${r.status === 'requested' ? '⏳' : '✅'} *${r.slotLabel}* — ` +
+          `${r.name || r.clientPhone || '+' + r.phone}` +
+          `${r.mode === 'video' ? ' (וידאו)' : ''}` +
+          `${r.clientPhone ? ` · ${r.clientPhone}` : ''}` +
+          (r.status === 'requested' && config.ADMIN_TOKEN
+            ? `\n   לאישור: ${config.PUBLIC_URL}/admin/meeting/confirm?token=${encodeURIComponent(config.ADMIN_TOKEN)}&phone=${r.phone}`
+            : '');
+
+        await handoff.notifyAgents(
+          `📅 *פגישות* — ${pending.length} ממתינות לאישור, ${rows.length - pending.length} מאושרות\n\n` +
+          rows.slice(0, 12).map(line).join('\n\n'),
+          'pudim_meetings_digest',
+          [String(pending.length), String(rows.length)]
+        );
+      } catch (err) {
+        console.error('❌ Meetings digest error:', err.message);
+      }
+    }, { timezone: 'UTC' });
+    console.log('⏰ Meetings digest scheduled (08:00 Israel)');
+  }
+
+  // The day-before reminder — 10:00 Israel. This is what stops a no-show.
+  cron.schedule('0 7 * * *', async () => {
+    try {
+      const soon = dashboard.meetings().filter(r => {
+        if (r.status !== 'confirmed') return false;
+        return r.hoursUntil > 0 && r.hoursUntil <= 34;      // tomorrow's evening
+      });
+      for (const row of soon) {
+        const session = storage.getConversation(row.phone);
+        const m = session?.profile?.meeting;
+        if (!m || m.reminderSentAt) continue;
+        const ok = await wa.sendText(
+          row.phone,
+          meeting.reminderText(session.profile, { iso: m.slotIso, label: m.slotLabel }, m.mode)
+        ).catch(() => false);
+        if (ok) {
+          m.reminderSentAt = new Date().toISOString();
+          storage.setConversation(row.phone, session);
+          storage.logEvent(row.phone, 'meeting_reminder_sent', { slot: m.slotIso });
+        } else {
+          // The 24-hour window with the customer is shut. The owner needs to
+          // know, because an unreminded meeting is a meeting that may not happen.
+          await handoff.notifyAgents(
+            `⚠️ לא הצלחתי לשלוח תזכורת ל*${row.name || row.clientPhone}* ` +
+            `לפגישה ב${row.slotLabel} — חלון 24 השעות מול הלקוח סגור. שווה להתקשר.`,
+            null, []
+          ).catch(() => {});
+        }
+      }
+      if (soon.length) console.log(`✅ Meeting reminders: ${soon.length} checked`);
+    } catch (err) {
+      console.error('❌ Meeting reminder error:', err.message);
+    }
+  }, { timezone: 'UTC' });
+  console.log('⏰ Meeting reminders scheduled (10:00 Israel, day before)');
 }
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────

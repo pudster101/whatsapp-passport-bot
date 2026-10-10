@@ -54,6 +54,22 @@ function create(phone, extra = {}) {
 
     nextAction: null,
     humanStatus: 'none',          // none | requested | notified | handled
+
+    // The office meeting — the goal of the conversation. A lead who agrees to
+    // sit down at Ashkenazi 21 with their documents has shown more intent than
+    // any score can measure. See src/sales/meeting.js.
+    meeting: {
+      status: null,               // offered | slots_proposed | requested | confirmed | declined
+      mode: 'office',             // office | video
+      slotIso: null,
+      slotLabel: null,
+      offered: [],                // the slots we put on the table, as ISO strings
+      offeredAt: null,
+      requestedAt: null,
+      confirmedAt: null,
+      declines: 0,
+      reminderSentAt: null,
+    },
     ...extra,
   };
 }
@@ -71,6 +87,11 @@ function merge(profile, updates = {}) {
       for (const [k, v] of Object.entries(value)) {
         if (v !== null && v !== undefined && v !== '') out.eligibility[k] = v;
       }
+      continue;
+    }
+
+    if (key === 'meeting' && typeof value === 'object') {
+      out.meeting = { ...(out.meeting || {}), ...value };
       continue;
     }
 
@@ -324,6 +345,21 @@ function hasContactDetails(profile) {
   return !!(profile.name && profile.clientPhone);
 }
 
+/**
+ * The meeting record, created on demand.
+ * Sessions that started before meetings existed have no such field.
+ */
+function ensureMeeting(profile) {
+  if (!profile.meeting) {
+    profile.meeting = {
+      status: null, mode: 'office', slotIso: null, slotLabel: null,
+      offered: [], offeredAt: null, requestedAt: null, confirmedAt: null,
+      declines: 0, reminderSentAt: null,
+    };
+  }
+  return profile.meeting;
+}
+
 /** Compact context string handed to the model and to the human agent. */
 function summarise(profile) {
   const e = profile.eligibility || {};
@@ -388,6 +424,7 @@ module.exports = {
   missingFacts,
   isQualified,
   hasContactDetails,
+  ensureMeeting,
   summarise,
   fromLegacySession,
   deriveArticle,

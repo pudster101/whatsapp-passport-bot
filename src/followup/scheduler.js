@@ -178,6 +178,10 @@ async function runSweep() {
   let sent = 0;
 
   for (const phone of phones) {
+    // Never chase one of our own numbers. The owner's keep-alive conversation
+    // sat in QUALIFICATION for weeks and was a follow-up candidate every sweep.
+    if (config.isAgentPhone(phone)) continue;
+
     const session = conversations[phone];
     const profile = session?.profile;
     if (!profile) continue;

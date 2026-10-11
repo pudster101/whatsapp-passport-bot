@@ -1,6 +1,40 @@
 require('dotenv').config();
 
+// ─── Internal phone numbers ───────────────────────────────────────────────────
+// The owner's own number, the agent phones, and anything listed in
+// STATS_EXCLUDE_PHONES. These are NOT customers: the keep-alive message the
+// owner sends the bot every morning used to open a conversation, climb to a
+// buying-intent score of 100 and sit on the weekly page as "hot lead, nobody
+// called him" — and on 11 Oct his own conversation crossed the 60-message
+// ceiling, so the bot handed him over to himself and stopped replying.
+//
+// Matching is on the last 9 digits, so 0547787804, 972547787804 and
+// +972-54-778-7804 are all the same number.
+const AGENT_PHONES = process.env.AGENT_PHONE
+  ? process.env.AGENT_PHONE.split(',').map(p => p.trim()).filter(Boolean)
+  : [];
+
+const OWNER_PHONE = '972547787804';
+
+const EXTRA_INTERNAL = (process.env.STATS_EXCLUDE_PHONES || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
+
+const tail9 = p => String(p || '').replace(/\D/g, '').slice(-9);
+
+const INTERNAL_TAILS = new Set(
+  [OWNER_PHONE, ...AGENT_PHONES, ...EXTRA_INTERNAL].map(tail9).filter(Boolean)
+);
+
+/** Is this one of ours? Used to keep internal traffic out of the lead data. */
+function isAgentPhone(phone) {
+  const t = tail9(phone);
+  return !!t && INTERNAL_TAILS.has(t);
+}
+
 module.exports = {
+  isAgentPhone,
+  internalPhoneTails: () => new Set(INTERNAL_TAILS),
+  OWNER_PHONE,
   // ─── WhatsApp Business API ──────────────────────────────────────────────
   WHATSAPP_TOKEN: process.env.WHATSAPP_TOKEN,
   WHATSAPP_PHONE_ID: process.env.WHATSAPP_PHONE_ID,
@@ -48,9 +82,7 @@ module.exports = {
   // ─── Agent phones ───────────────────────────────────────────────────────
   // Comma-separated list, e.g. AGENT_PHONE=972547787804,972542689322
   AGENT_PHONE: process.env.AGENT_PHONE,
-  AGENT_PHONES: process.env.AGENT_PHONE
-    ? process.env.AGENT_PHONE.split(',').map(p => p.trim()).filter(Boolean)
-    : [],
+  AGENT_PHONES,
 
   // ─── Follow-up engine ───────────────────────────────────────────────────
   FOLLOWUP_ENABLED: process.env.FOLLOWUP_ENABLED !== 'false',

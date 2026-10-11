@@ -1,4 +1,18 @@
 /**
+ * DEPRECATED — use sync-templates.js instead.
+ *
+ * It submitted only part of the set and did not know about the meeting, waiting-list or digest alerts.
+ *
+ * The authoritative list of templates now lives in src/templates.js, which is
+ * checked against the code by the test suite. Run:
+ *     node sync-templates.js --report   # look
+ *     node sync-templates.js            # submit anything missing
+ */
+console.error("\n\u274C This script is deprecated and would put the templates out of step with the code.");
+console.error("   Use:  node sync-templates.js --report\n");
+process.exit(1);
+
+/**
  * update-templates.js
  * Lists all templates, updates rejected ones with clean content,
  * and creates any missing templates under new names.

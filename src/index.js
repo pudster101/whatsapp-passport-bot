@@ -411,6 +411,69 @@ app.get('/admin/waiting', requireAdmin, (req, res) => {
   }));
 });
 
+/**
+ * Which alerts can reach you when the 24-hour window is shut.
+ *
+ * An approved template may be sent at any hour; free text may not. This page
+ * answers the only question that matters about them — is the alert that would
+ * have told me about a new lead at 10:52 on a Saturday actually approved? —
+ * and lists anything currently held in the queue.
+ */
+app.get('/admin/templates', requireAdmin, async (req, res) => {
+  const catalog = require('./templates');
+  const alertQueue = require('./sales/alertQueue');
+
+  let remote = new Map();
+  let fetchError = null;
+  try {
+    remote = new Map((await wa.listTemplates()).map(t => [t.name, t]));
+  } catch (err) {
+    fetchError = err.response?.data?.error?.message || err.message;
+  }
+
+  const rows = catalog.TEMPLATES.map(t => {
+    const r = remote.get(t.name);
+    return {
+      name: t.name,
+      status: r ? r.status : 'NOT_SUBMITTED',
+      critical: catalog.CRITICAL.includes(t.name),
+      params: t.params,
+      sentBy: t.sentBy,
+      rejectedReason: r?.rejected_reason && r.status === 'REJECTED' ? r.rejected_reason : null,
+    };
+  });
+
+  const held = [];
+  for (const phone of config.AGENT_PHONES) {
+    try {
+      const items = await alertQueue.pending(phone);
+      if (items.length) {
+        held.push({
+          phone,
+          count: items.length,
+          oldest: items[0]?.createdAt || null,
+          preview: items.slice(-3).map(i => String(i.data.text).slice(0, 120)),
+        });
+      }
+    } catch { /* the queue is best-effort */ }
+  }
+
+  res.json({
+    generatedAt: new Date().toISOString(),
+    fetchError,
+    summary: {
+      approved: rows.filter(r => r.status === 'APPROVED').length,
+      pending: rows.filter(r => r.status === 'PENDING').length,
+      rejected: rows.filter(r => r.status === 'REJECTED').length,
+      notSubmitted: rows.filter(r => r.status === 'NOT_SUBMITTED').length,
+      criticalNotApproved: rows.filter(r => r.critical && r.status !== 'APPROVED').map(r => r.name),
+    },
+    templates: rows,
+    heldAlerts: held,
+    howToFix: 'node sync-templates.js  (or --report to look without changing anything)',
+  });
+});
+
 app.get('/admin/hot', requireAdmin, async (req, res) => {
   try {
     res.json(await dashboard.hotList(parseInt(req.query.limit || '20', 10)));
@@ -420,7 +483,8 @@ app.get('/admin/hot', requireAdmin, async (req, res) => {
 });
 
 app.get('/admin/conversations', requireAdmin, (req, res) => {
-  const all = storage.getAllConversations();
+  // Our own numbers are not conversations — see dashboard.clientConversations.
+  const all = dashboard.clientConversations();
   res.json(Object.entries(all).map(([phone, s]) => ({
     phone,
     state: s.state,
@@ -517,7 +581,7 @@ app.get('/admin/media/:id', requireAdmin, async (req, res) => {
 app.get('/admin/live', requireAdmin, (req, res) => {
   const every = Math.max(3, parseInt(req.query.refresh || '8', 10));
   const token = req.query.token || '';
-  const all = storage.getAllConversations();
+  const all = dashboard.clientConversations();
 
   const esc = (t) => String(t == null ? '' : t)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -738,7 +802,7 @@ function scheduleJobs() {
           `🔥 לידים חמים: *${stats.overview.hotLeads}*` +
           hotLines;
 
-        await handoff.notifyAgents(text, 'pudim_daily_status', [
+        await handoff.notifyAgents(text, 'pudim_daily_status_v2', [
           String(stats.overview.activeConversations),
           String(stats.overview.leadsCaptured),
         ]);
@@ -885,7 +949,7 @@ async function start() {
         `🤖 *הבוט הופעל מחדש ופעיל* ✅\n\n🕐 ${startupTime}\n` +
         `💾 אחסון: ${storage.isPostgres() ? 'Postgres' : 'קובץ מקומי ⚠️'}\n` +
         `🧠 מנוע מכירות: ${brain.isAvailable() ? config.AI_MODE : 'כבוי'}`,
-        'pudim_bot_startup',
+        'pudim_bot_startup_v2',
         [startupTime]
       ).catch(err => console.error('❌ Startup notification error:', err.message));
     }

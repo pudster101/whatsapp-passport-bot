@@ -13,8 +13,9 @@
 const storage = require('../storage');
 const config = require('../config');
 
-// The owner's personal number — keep-alive messages from it are not leads.
-const DEFAULT_INTERNAL = ['972547787804'];
+// The owner's number, the agent phones and STATS_EXCLUDE_PHONES all live in
+// config now, so this endpoint, the dashboard and the flow agree on who is
+// internal. Kept as a local constant only for the extra numbers below.
 
 const BANDS = [
   { key: 'b00_15', label: '0-15', min: 0, max: 15 },
@@ -27,10 +28,7 @@ const BANDS = [
 const tail9 = (p) => String(p || '').replace(/\D/g, '').slice(-9);
 
 function internalTails() {
-  const extra = (process.env.STATS_EXCLUDE_PHONES || '')
-    .split(',').map(s => s.trim()).filter(Boolean);
-  return new Set([...DEFAULT_INTERNAL, ...(config.AGENT_PHONES || []), ...extra]
-    .map(tail9).filter(Boolean));
+  return config.internalPhoneTails();
 }
 
 function round(n, d = 1) {

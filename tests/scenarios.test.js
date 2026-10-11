@@ -18,8 +18,18 @@ const Module = require('module');
 
 // ─── Mock the WhatsApp adapter before anything requires it ───────────────────
 const sent = [];
+
+// Numbers whose 24-hour window is "closed" for the duration of a test. A send
+// to one of these fails exactly the way Meta fails it: code 131047.
+const windowClosedFor = new Set();
+
 const waMock = {
-  sendText: async (to, text) => { sent.push({ to, type: 'text', text }); return true; },
+  sendTextResult: async (to, text) => {
+    if (windowClosedFor.has(to)) return { ok: false, code: 131047, windowClosed: true };
+    sent.push({ to, type: 'text', text });
+    return { ok: true, id: 'mock' };
+  },
+  sendText: async (to, text) => (await waMock.sendTextResult(to, text)).ok,
   sendButtons: async (to, body) => { sent.push({ to, type: 'buttons', text: body }); return true; },
   sendList: async (to, body) => { sent.push({ to, type: 'list', text: body }); return true; },
   sendImage: async (to, url) => { sent.push({ to, type: 'image', text: url }); return true; },
@@ -1240,6 +1250,207 @@ async function run() {
     })());
     check('the phone number is still pursued',
       /מספר|טלפון/.test(no), no.slice(0, 80));
+  }
+
+  section('38. The owner is not a lead');
+  {
+    const config = require('../src/config');
+    const agent = config.OWNER_PHONE;
+
+    // An earlier section seeded his number to prove /stats excludes it. Clear
+    // it so this section measures only what handleMessage does.
+    storage.deleteConversation(agent);
+    await storage.flush();
+
+    sent.length = 0;
+    await flows.handleMessage(agent, {
+      type: 'text', id: `agent-${RUN_ID}-1`, text: { body: TRIGGER },
+    });
+    const reply = sent.filter(s => s.to === agent).map(s => s.text).join('\n');
+
+    check('the trigger phrase from his own number opens no conversation',
+      !storage.getConversation(agent));
+    check('he is not asked about his grandmother',
+      !/בן משפחה|סבת|זכאות שלך/.test(reply), reply.slice(0, 100));
+    check('he gets a status reply instead',
+      /החלון פתוח/.test(reply), reply.slice(0, 100));
+
+    // Three more messages: under the old code these counted toward the
+    // 60-message ceiling that eventually made the bot stop answering him.
+    for (let i = 2; i <= 4; i++) {
+      await flows.handleMessage(agent, {
+        type: 'text', id: `agent-${RUN_ID}-${i}`, text: { body: 'מה המצב' },
+      });
+    }
+    check('and no session is built up however much he writes',
+      !storage.getConversation(agent));
+    check('so the message ceiling can never hand him over to himself',
+      !storage.getConversation(agent)?.profile?.humanStatus);
+  }
+
+  section('39. An alert the closed window would have eaten');
+  {
+    const config = require('../src/config');
+    const handoff = require('../src/sales/handoff');
+    const alertQueue = require('../src/sales/alertQueue');
+    const agent = config.OWNER_PHONE;
+    const marker = `אבי-${RUN_ID}`;
+
+    config.AGENT_PHONES.push(agent);
+    windowClosedFor.add(agent);
+    sent.length = 0;
+
+    const res = await handoff.notifyAgents(`🔔 ליד חדש — ${marker}`);
+    check('a send into a closed window is not counted as delivered', res.sent === 0);
+    check('and it is held instead of dropped', res.queued === 1, JSON.stringify(res));
+    check('nothing reached the agent', !sent.some(s => s.to === agent));
+
+    await storage.flush();
+    const waiting = await alertQueue.pending(agent);
+    check('the alert is in the queue', waiting.length >= 1, `${waiting.length}`);
+    check('with its text intact',
+      waiting.some(w => w.data.text.includes(marker)));
+
+    // He writes to the bot. That single message reopens the window.
+    windowClosedFor.delete(agent);
+    sent.length = 0;
+    await flows.handleMessage(agent, {
+      type: 'text', id: `agent-${RUN_ID}-flush`, text: { body: 'בוקר טוב' },
+    });
+    const delivered = sent.filter(s => s.to === agent).map(s => s.text).join('\n');
+
+    check('the held alert goes out the moment he writes',
+      delivered.includes(marker), delivered.slice(0, 120));
+    check('with the time it was created',
+      /התראה מ-/.test(delivered), delivered.slice(0, 120));
+
+    await storage.flush();
+    const after = await alertQueue.pending(agent);
+    check('and the queue is empty afterwards', after.length === 0, `${after.length}`);
+
+    // A failure that is NOT the window must not be queued — retrying it
+    // forever would just repeat a broken send.
+    const realSend = waMock.sendTextResult;
+    waMock.sendTextResult = async () => ({ ok: false, code: 131026, detail: 'undeliverable' });
+    const hard = await handoff.notifyAgents('🔔 ליד חדש — לא ניתן למסירה');
+    waMock.sendTextResult = realSend;
+    check('a non-window failure is reported, not queued',
+      hard.failed === 1 && hard.queued === 0, JSON.stringify(hard));
+
+    config.AGENT_PHONES.length = 0;
+  }
+
+  section('40. Internal numbers are off every count');
+  {
+    const config = require('../src/config');
+    const agent = config.OWNER_PHONE;
+
+    // Exactly the state his number was actually in on 11 Oct: score 100,
+    // handed over, a phone number on file, waiting 40 hours.
+    storage.setConversation(agent, {
+      state: 'DONE',
+      startedAt: new Date(Date.now() - 20 * 86400000).toISOString(),
+      history: [],
+      profile: {
+        waPhone: agent,
+        name: 'יהונתן',
+        clientPhone: '0547787804',
+        buyingIntent: 100,
+        stage: 'HUMAN_HANDOFF',
+        humanStatus: 'notified',
+        messageCount: 63,
+        firstSeenAt: new Date(Date.now() - 20 * 86400000).toISOString(),
+        lastInboundAt: new Date(Date.now() - 40 * 3600000).toISOString(),
+        eligibility: { ancestor: 'סבתא', birthPlace: 'יאשי', leftYear: 1950 },
+        meeting: { status: 'requested', slotIso: new Date(Date.now() + 86400000).toISOString(), slotLabel: 'מחר' },
+      },
+    });
+    await storage.flush();
+
+    const hot = await dashboard.hotList(50);
+    check('he is not at the top of the hot list',
+      !hot.some(r => r.phone === agent), JSON.stringify(hot.slice(0, 1)));
+
+    check('he is not on the waiting-for-a-callback list',
+      !dashboard.waitingForCallback().some(r => r.phone === agent));
+
+    check('he is not booked into a meeting with himself',
+      !dashboard.meetings({ includePast: true }).some(r => r.phone === agent));
+
+    const week = await dashboard.weekly(30);
+    check('he is not an unhandled hot lead on the weekly page',
+      !week.unhandledHot.some(r => r.phone === agent));
+
+    const f = await dashboard.funnel(30);
+    const clientCount = Object.keys(storage.getAllConversations())
+      .filter(p => !config.isAgentPhone(p)).length;
+    check('and he is not counted as an active conversation',
+      f.overview.activeConversations === clientCount,
+      `${f.overview.activeConversations} vs ${clientCount}`);
+
+    storage.deleteConversation(agent);
+    await storage.flush();
+  }
+
+  section('41. The template catalog matches the code');
+  {
+    const fs = require('fs');
+    const catalog = require('../src/templates');
+
+    const problems = catalog.validate();
+    check('every template body is one Meta will accept',
+      problems.length === 0, problems.join(' | '));
+
+    // The root cause of every rejection on this account: no sample values.
+    const noExample = catalog.TEMPLATES.filter(
+      t => t.params > 0 && (!Array.isArray(t.example) || t.example.length !== t.params));
+    check('every placeholder has a sample value for Meta',
+      noExample.length === 0, noExample.map(t => t.name).join(', '));
+
+    // Every template name quoted anywhere in src must exist in the catalog.
+    // This is the drift that caused the outage: the code called three names
+    // that no script ever submitted to Meta.
+    const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true })
+      .flatMap(d => d.isDirectory()
+        ? walk(path.join(dir, d.name))
+        : (d.name.endsWith('.js') ? [path.join(dir, d.name)] : []));
+
+    const srcDir = path.join(__dirname, '..', 'src');
+    const used = new Set();
+    for (const file of walk(srcDir)) {
+      if (file.endsWith(path.join('src', 'templates.js'))) continue;
+      const body = fs.readFileSync(file, 'utf8');
+      for (const m of body.matchAll(/'(pudim_[a-z0-9_]+|passport_lead_new|b1_lead_new)'/g)) {
+        used.add(m[1]);
+      }
+    }
+
+    const unknown = [...used].filter(n => !catalog.NAMES.includes(n));
+    check('no template name in the code is missing from the catalog',
+      unknown.length === 0, unknown.join(', '));
+    check('the code really does send templates', used.size >= 7, `${used.size}`);
+
+    const criticalPresent = catalog.CRITICAL.every(n => catalog.NAMES.includes(n));
+    check('every critical template is in the catalog', criticalPresent);
+
+    // The parameter counts the call sites actually pass.
+    const expected = {
+      passport_lead_new: 6, b1_lead_new: 3, pudim_meeting_request: 3,
+      pudim_hot_lead: 3, pudim_handoff: 3, pudim_waiting_list: 1,
+      pudim_meetings_digest: 2, pudim_chat_start: 2, pudim_daily_status_v2: 2,
+      pudim_bot_startup_v2: 1,
+    };
+    const mismatched = Object.entries(expected)
+      .filter(([n, p]) => catalog.get(n)?.params !== p)
+      .map(([n, p]) => `${n} expected ${p} got ${catalog.get(n)?.params}`);
+    check('each body has exactly as many placeholders as the call site fills',
+      mismatched.length === 0, mismatched.join(' | '));
+
+    // The hot-lead alert used to pass null — the single most valuable alert the
+    // bot sends had no way through a closed window.
+    const handoffSrc = fs.readFileSync(path.join(srcDir, 'sales', 'handoff.js'), 'utf8');
+    check('the hot-lead alert now goes out on a template',
+      /notifyHotLead[\s\S]{0,600}pudim_hot_lead/.test(handoffSrc));
   }
 
   // ── Summary ────────────────────────────────────────────────────────────────

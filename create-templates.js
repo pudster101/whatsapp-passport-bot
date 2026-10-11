@@ -1,4 +1,18 @@
 /**
+ * DEPRECATED — use sync-templates.js instead.
+ *
+ * It DELETED every pudim_ template and resubmitted names the bot never calls (pudim_lead_passport, pudim_lead_b1), while the three alerts that matter most - pudim_meeting_request, pudim_waiting_list, pudim_meetings_digest - were never submitted at all.
+ *
+ * The authoritative list of templates now lives in src/templates.js, which is
+ * checked against the code by the test suite. Run:
+ *     node sync-templates.js --report   # look
+ *     node sync-templates.js            # submit anything missing
+ */
+console.error("\n\u274C This script is deprecated and would put the templates out of step with the code.");
+console.error("   Use:  node sync-templates.js --report\n");
+process.exit(1);
+
+/**
  * create-templates.js
  * Deletes existing pudim_ templates and resubmits clean versions for approval.
  * Run: node create-templates.js

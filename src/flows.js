@@ -33,6 +33,7 @@ const objections = require('./sales/objections');
 const nextAction = require('./sales/nextAction');
 const handoff = require('./sales/handoff');
 const closing = require('./sales/closing');
+const dashboard = require('./admin/dashboard');
 
 // A real conversation on 5 Sep ran past this and the transcript looked as if
 // it had been chopped into pieces. Postgres stores the session as JSONB, so a
@@ -223,9 +224,119 @@ async function showInterestButtons(phone) {
   );
 }
 
+// ─── Agent messages ───────────────────────────────────────────────────────────
+
+// Status replies are throttled: he may send several messages in a row, and he
+// does not need the same summary three times. The queue is flushed every time.
+const lastAgentStatus = new Map(); // phone → ms
+const AGENT_STATUS_QUIET_MS = 10 * 60 * 1000;
+
+/**
+ * The owner wrote to the bot.
+ *
+ * This is not a lead and never was. Until 11 Oct it was treated as one: his
+ * number ran up 63 messages, scored 100/100, appeared on the weekly page as a
+ * hot lead nobody had called, and then crossed the message ceiling — at which
+ * point the bot "handed him over to a human" and stopped answering him.
+ *
+ * What his message IS, is the thing that reopens the 24-hour window. So the
+ * only two jobs here are: send him everything that was held while it was
+ * closed, and tell him where things stand.
+ */
+async function handleAgentMessage(phone, message) {
+  const text = message.type === 'text'
+    ? (message.text?.body?.trim() || '')
+    : `[${message.type}]`;
+
+  console.log(`👔 [${phone}] agent message — "${text}" (not a lead)`);
+  storage.logEvent(phone, 'agent_message', { text: text.slice(0, 200) });
+
+  // The window is open again — deliver what the closed window swallowed.
+  let flushed = { sent: 0, held: 0, skipped: 0 };
+  try {
+    flushed = await handoff.alertQueue.flush(phone);
+  } catch (err) {
+    console.warn(`⚠️  Alert flush failed for ${phone}: ${err.message}`);
+  }
+
+  const now = Date.now();
+  const last = lastAgentStatus.get(phone) || 0;
+  if (flushed.sent === 0 && now - last < AGENT_STATUS_QUIET_MS) return;
+  lastAgentStatus.set(phone, now);
+
+  // A short, honest status. Everything here is already computed for the
+  // dashboard, so it costs nothing and it is what he actually asks for.
+  let waiting = [], upcoming = [];
+  try {
+    waiting = dashboard.waitingForCallback();
+    upcoming = dashboard.meetings();
+  } catch (err) {
+    console.warn(`⚠️  Agent status build failed: ${err.message}`);
+  }
+
+  const until = new Date(now + 24 * 3600000);
+  const untilLabel = new Intl.DateTimeFormat('he-IL', {
+    timeZone: config.TIMEZONE, weekday: 'long', hour: '2-digit', minute: '2-digit',
+  }).format(until);
+
+  const lines = ['✅ *החלון פתוח.*'];
+  lines.push(`התראות יגיעו אליך ישירות עד *${untilLabel}*.`);
+  lines.push('');
+
+  if (flushed.sent) {
+    lines.push(`📬 שלחתי לך ${flushed.sent} התראות שהמתינו.`);
+    if (flushed.skipped) lines.push(`(עוד ${flushed.skipped} ישנות יותר — בדף השבועי.)`);
+    lines.push('');
+  }
+
+  const requested = upcoming.filter(m => m.status === 'requested');
+  if (requested.length) {
+    lines.push(`📅 *${requested.length} בקשות פגישה ממתינות לאישור שלך:*`);
+    for (const m of requested.slice(0, 5)) {
+      lines.push(`• ${m.name || '+' + m.phone} — ${m.slotLabel}`);
+    }
+    lines.push('');
+  }
+
+  const confirmed = upcoming.filter(m => m.status === 'confirmed');
+  if (confirmed.length) {
+    lines.push(`✔️ *פגישות מאושרות:* ${confirmed.length}`);
+    for (const m of confirmed.slice(0, 5)) {
+      lines.push(`• ${m.name || '+' + m.phone} — ${m.slotLabel}`);
+    }
+    lines.push('');
+  }
+
+  if (waiting.length) {
+    lines.push(`📞 *${waiting.length} לידים ממתינים לשיחה ממך:*`);
+    for (const w of waiting.slice(0, 5)) {
+      lines.push(`• ${w.name || '+' + w.phone} · ${w.clientPhone} · ${w.hoursWaiting} שעות`);
+    }
+    if (waiting.length > 5) lines.push(`_ועוד ${waiting.length - 5}._`);
+    lines.push('');
+  }
+
+  if (!flushed.sent && !requested.length && !confirmed.length && !waiting.length) {
+    lines.push('אין כרגע שום דבר שממתין לך. 👍');
+    lines.push('');
+  }
+
+  if (config.ADMIN_TOKEN) {
+    lines.push(`📊 ${config.PUBLIC_URL}/admin/weekly?token=${encodeURIComponent(config.ADMIN_TOKEN)}`);
+  }
+
+  await wa.sendText(phone, lines.join('\n').trim());
+}
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 async function handleMessage(phone, message) {
+  // An agent phone is never a customer. Intercepted before a session is even
+  // loaded, so no conversation, no score, no message count, no lead.
+  if (config.isAgentPhone(phone)) {
+    return handleAgentMessage(phone, message);
+  }
+
   const { session, isNew } = loadSession(phone);
   const profile = session.profile;
 
@@ -1661,6 +1772,7 @@ function fallbackFor(analysis, profile, text = '', session = null, forceCta = fa
 
 module.exports = {
   handleMessage,
+  handleAgentMessage,
   handleStart,
   showInterestButtons,
   isTriggerMessage,

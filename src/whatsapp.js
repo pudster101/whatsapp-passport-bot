@@ -61,12 +61,28 @@ async function post(payload, label, attempt = 1) {
 
 // ─── Senders ──────────────────────────────────────────────────────────────────
 
-async function sendText(to, text) {
+/**
+ * Send text and report WHY it failed.
+ *
+ * sendText below returns a bare boolean, which is all most callers need. The
+ * agent-alert path needs more: a message that fails because the 24-hour window
+ * closed has to be held and re-sent, while a message that fails for any other
+ * reason must not be. On 10 Oct two lead alerts — אבי and עופר — were dropped
+ * on the floor by a `return r.ok` that threw the reason away.
+ *
+ * @returns {{ok: boolean, id?: string, code?: number, detail?: string, windowClosed?: boolean}}
+ */
+async function sendTextResult(to, text) {
   const r = await post(
     { messaging_product: 'whatsapp', to, type: 'text', text: { body: text } },
     `sendText → ${to}`
   );
   if (r.ok) console.log(`✅ Sent text to ${to} | msg_id=${r.id}`);
+  return r;
+}
+
+async function sendText(to, text) {
+  const r = await sendTextResult(to, text);
   return r.ok;
 }
 
@@ -149,11 +165,39 @@ async function loadApprovedTemplates() {
       console.warn('⚠️  No APPROVED templates — agent alerts rely on the 24-hour window.');
       console.warn('    Send any message to the bot once a day to keep it open.');
     }
+
+    // Name every alert that currently has no template behind it. Each one is a
+    // lead that goes missing the moment the window closes.
+    const catalog = require('./templates');
+    const missing = catalog.CRITICAL.filter(n => !approvedTemplates.has(n));
+    if (missing.length) {
+      console.warn(`⚠️  ${missing.length} critical template(s) NOT approved: ${missing.join(', ')}`);
+      console.warn('    Run `node sync-templates.js` to submit them, then check /admin/templates.');
+      console.warn('    Until then these alerts are held and re-sent when you write to the bot.');
+    }
   } catch (err) {
     console.error('⚠️  Could not list templates:', err.response?.data?.error?.message || err.message);
     templatesLoaded = true;
   }
   return approvedTemplates;
+}
+
+/**
+ * Every template on the account with its review status — for /admin/templates.
+ * Unlike loadApprovedTemplates this keeps the rejected and pending ones, which
+ * are precisely the ones worth looking at.
+ */
+async function listTemplates() {
+  if (!config.WHATSAPP_TOKEN || !config.WABA_ID) return [];
+  const out = [];
+  let url = `https://graph.facebook.com/v18.0/${config.WABA_ID}/message_templates` +
+            '?fields=name,status,category,language,rejected_reason&limit=100';
+  while (url) {
+    const res = await axios.get(url, { headers: headers(), timeout: 15000 });
+    out.push(...(res.data?.data || []));
+    url = res.data?.paging?.next || null;
+  }
+  return out;
 }
 
 async function sendTemplate(to, templateName, params = []) {
@@ -238,10 +282,12 @@ module.exports = {
   getMediaUrl,
   downloadMedia,
   sendText,
+  sendTextResult,
   sendButtons,
   sendList,
   sendImage,
   sendTemplate,
+  listTemplates,
   markRead,
   loadApprovedTemplates,
   approvedTemplates: () => approvedTemplates,

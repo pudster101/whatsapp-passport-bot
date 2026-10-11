@@ -12,11 +12,19 @@ const objections = require('./objections');
 const stages = require('./stages');
 const scoring = require('./scoring');
 const meeting = require('./meeting');
+const alertQueue = require('./alertQueue');
 
-/** Send to every configured agent phone. Template first, free text fallback. */
+/**
+ * Send to every configured agent phone. Template first, free text fallback.
+ *
+ * An approved template may be sent at any hour. Free text may not: outside the
+ * 24-hour window Meta rejects it with 131047 and the alert is lost. When that
+ * happens the alert is HELD (see alertQueue) and goes out the moment the agent
+ * writes to the bot. Nothing about a lead is ever silently dropped again.
+ */
 async function notifyAgents(text, templateName = null, params = []) {
-  if (!config.AGENT_PHONES.length) return { sent: 0, failed: 0 };
-  let sent = 0, failed = 0;
+  if (!config.AGENT_PHONES.length) return { sent: 0, failed: 0, queued: 0 };
+  let sent = 0, failed = 0, queued = 0;
 
   await Promise.all(config.AGENT_PHONES.map(async (phone) => {
     try {
@@ -24,15 +32,22 @@ async function notifyAgents(text, templateName = null, params = []) {
         const ok = await wa.sendTemplate(phone, templateName, params);
         if (ok) { sent++; return; }
       }
-      const ok = await wa.sendText(phone, text);
-      ok ? sent++ : failed++;
+      const r = await wa.sendTextResult(phone, text);
+      if (r.ok) { sent++; return; }
+
+      if (r.windowClosed) {
+        alertQueue.enqueue(phone, text, { template: templateName || null });
+        queued++;
+        return;
+      }
+      failed++;
     } catch (err) {
       failed++;
       console.warn(`⚠️  Agent notify failed for ${phone}: ${err.message}`);
     }
   }));
 
-  return { sent, failed };
+  return { sent, failed, queued };
 }
 
 const URGENCY_ICON = { high: '🔥', medium: '⏳', low: '🕐' };
@@ -144,7 +159,14 @@ async function notifyHotLead(profile) {
     title: '🔥 *ליד חם — כדאי להתערב עכשיו*',
     recommendation: 'הלקוח בשיחה פעילה ומגלה כוונת רכישה גבוהה. שיחה עכשיו תמיר הרבה יותר טוב.',
   });
-  return notifyAgents(text, null, []);
+  // This alert had no template behind it, which meant the single most valuable
+  // thing the bot can tell you — "someone is hot RIGHT NOW" — only arrived if
+  // you happened to have written to the bot in the last 24 hours.
+  return notifyAgents(
+    text,
+    'pudim_hot_lead',
+    [profile.name || 'לא נאסף', profile.waPhone, String(profile.buyingIntent || 0)]
+  );
 }
 
 /** Customer asked for a human, or the system decided one is needed. */
@@ -200,6 +222,7 @@ function recommendFor(profile) {
 
 module.exports = {
   notifyAgents,
+  alertQueue,
   notifyChatStart,
   notifyNewLead,
   notifyHotLead,

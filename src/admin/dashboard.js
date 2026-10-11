@@ -10,10 +10,31 @@ const objectionsLib = require('../sales/objections');
 const scoring = require('../sales/scoring');
 const config = require('../config');
 
+/**
+ * Every conversation EXCEPT our own numbers.
+ *
+ * The owner's keep-alive message to the bot used to count as a conversation,
+ * climb to 100/100, and sit at the top of the weekly page as a hot lead nobody
+ * had called. Every number on this page is a customer or it is wrong.
+ */
+function clientConversations() {
+  const out = {};
+  for (const [phone, session] of Object.entries(storage.getAllConversations())) {
+    if (config.isAgentPhone(phone)) continue;
+    out[phone] = session;
+  }
+  return out;
+}
+
+/** Internal events (agent messages, queued alerts) never count as activity. */
+function clientEvents(events = []) {
+  return events.filter(e => !e.waPhone || !config.isAgentPhone(e.waPhone));
+}
+
 async function funnel(days = 30) {
   const since = new Date(Date.now() - days * 86400000).toISOString();
-  const events = await storage.getEvents({ since, limit: 10000 });
-  const conversations = storage.getAllConversations();
+  const events = clientEvents(await storage.getEvents({ since, limit: 10000 }));
+  const conversations = clientConversations();
 
   // ─── Stage distribution of live conversations ───────────────────────────
   const byStage = {};
@@ -180,8 +201,8 @@ async function weekly(days = 7) {
   const tz = config.TIMEZONE;
   const sinceMs = Date.now() - days * 86400000;
   const since = new Date(sinceMs).toISOString();
-  const events = await storage.getEvents({ since, limit: 20000 });
-  const conversations = storage.getAllConversations();
+  const events = clientEvents(await storage.getEvents({ since, limit: 20000 }));
+  const conversations = clientConversations();
 
   // ─── The day buckets, oldest first, including days with nothing on them ──
   const buckets = new Map();
@@ -316,7 +337,7 @@ async function weekly(days = 7) {
 
 /** Leads ranked by how worth calling they are right now. */
 async function hotList(limit = 20) {
-  const conversations = storage.getAllConversations();
+  const conversations = clientConversations();
   const rows = [];
 
   for (const [phone, session] of Object.entries(conversations)) {
@@ -356,7 +377,7 @@ async function hotList(limit = 20) {
  */
 function waitingForCallback({ minHours = 12, minScore = null } = {}) {
   const threshold = minScore == null ? config.HOT_LEAD_THRESHOLD : minScore;
-  const conversations = storage.getAllConversations();
+  const conversations = clientConversations();
   const rows = [];
 
   for (const [phone, session] of Object.entries(conversations)) {
@@ -426,7 +447,7 @@ function meetingTotals(events = [], conversations = {}) {
  * a customer sitting at home wondering whether to drive over.
  */
 function meetings({ includePast = false } = {}) {
-  const conversations = storage.getAllConversations();
+  const conversations = clientConversations();
   const now = Date.now();
   const rows = [];
 
@@ -456,4 +477,4 @@ function meetings({ includePast = false } = {}) {
   return rows.sort((a, b) => new Date(a.slotIso) - new Date(b.slotIso));
 }
 
-module.exports = { funnel, hotList, weekly, waitingForCallback, meetings };
+module.exports = { funnel, hotList, weekly, waitingForCallback, meetings, clientConversations, clientEvents };

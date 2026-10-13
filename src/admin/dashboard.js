@@ -253,6 +253,13 @@ async function weekly(days = 7) {
     if (!p || p.optedOut) continue;
     if ((p.buyingIntent || 0) < config.HOT_LEAD_THRESHOLD) continue;
     if (p.stage === 'CONVERSION' || handedOff.has(phone)) continue;
+    // Marked handled means handled. גנץ פנינה was marked handled and still sat
+    // at the top of this list for twelve days at 289 hours, while the waiting
+    // list — which does apply this filter — had already dropped her. Two pages
+    // telling the owner different things about the same woman is worse than
+    // either page being wrong.
+    if (p.humanStatus === 'handled') continue;
+    if (p.notEligible || p.stage === 'NOT_ELIGIBLE') continue;
     const last = p.lastInboundAt ? new Date(p.lastInboundAt).getTime() : 0;
     if (last < sinceMs) continue;
     unhandled.push({
@@ -323,6 +330,13 @@ async function weekly(days = 7) {
       diedAtFirstMessage: diedTotal,
       diedShare: started ? Math.round((diedTotal / started) * 100) : null,
       unhandledHot: unhandled.length,
+      // How much of the ad spend is landing on people with no Romanian-born
+      // relative. Previously these were filed as HUMAN_HANDOFF and counted as
+      // leads somebody had to call.
+      notEligible: Object.values(conversations)
+        .filter(s => s?.profile?.notEligible || s?.profile?.stage === 'NOT_ELIGIBLE').length,
+      // Files actually received in the period — the strongest signal there is.
+      documentsReceived: events.filter(e => e.type === 'document_received').length,
       ...meetingTotals(events, conversations),
     },
     unhandledHot: unhandled.slice(0, 25),
@@ -360,6 +374,10 @@ async function hotList(limit = 20) {
       summary: p.conversationSummary,
       lastInboundAt: p.lastInboundAt,
       messageCount: p.messageCount,
+      // Shown rather than filtered out, so the list never hides a row the
+      // weekly page is counting (or stops counting).
+      handled: p.humanStatus === 'handled',
+      documents: (p.documents || []).length,
     });
   }
 

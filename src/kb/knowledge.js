@@ -106,6 +106,9 @@ const B1 = {
   ],
   deadline: {
     date: '15 במרץ 2027',
+    // The English arm of the ad gets English replies, and the deadline is a
+    // date we quote in both.
+    dateEn: '15 March 2027',
     what: 'המועד להגשת תעודת השפה הרומנית ברמת B1 הוארך רשמית עד 15 במרץ 2027',
     consequence: 'אי הגשת התעודה במועד תוביל לדחיית הבקשה לאזרחות',
   },

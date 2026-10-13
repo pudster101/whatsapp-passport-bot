@@ -257,6 +257,15 @@ async function compose(analysis, profile, history = [], directive = null) {
     let text = (res.content?.[0]?.text || '').trim();
     if (!text) return null;
 
+    // "מדבר: עוזר משרד פודים\n\n---\n\n…" — the model writing out its own role
+    // before answering. Take the header off and keep the answer.
+    const stripped = stripScaffold(text);
+    if (stripped !== text) {
+      console.warn('✂️  Stripped a role header from the reply before sending');
+      text = stripped;
+    }
+    if (!text) return null;
+
     // Hit the ceiling anyway? Then the last sentence is half-written. Send what
     // is whole and drop the fragment; a reply that stops mid-word reads as a
     // broken system, and the customer has to guess what was coming.
@@ -638,7 +647,51 @@ function enforceGuardrails(text, profile = null) {
     console.warn('🛑 Guardrail: internal state leaked in AI reply');
     return null;
   }
+  if (leaksScaffold(text)) {
+    console.warn('🛑 Guardrail: prompt scaffolding in AI reply');
+    return null;
+  }
   return text;
+}
+
+/**
+ * The prompt's own furniture, sent to a customer.
+ *
+ * 5 Oct, 17:42 — יצחק פוקס, who had just explained that his mother was born in
+ * Moinești in 1925, received a message that opened:
+ *
+ *     מדבר: עוזר משרד פודים
+ *
+ *     ---
+ *
+ *     מצוין! 🙂 אמא שלך נולדה במוינשט...
+ *
+ * The answer underneath it was correct. The header is the model writing out the
+ * role it was given, and there is no reading of it that is acceptable in a law
+ * firm's WhatsApp. So: a role header at the very top is stripped, because the
+ * message under it is usually fine; anything that still looks like scaffolding
+ * after that fails the reply over to the scripted copy.
+ */
+const ROLE_HEADER =
+  /^\s*(?:מדבר(?:ת)?|דובר(?:ת)?|תפקיד|נציג|עוזר(?:ת)?|בוט|תשובה|הודעה|פלט|assistant|system|bot|role|reply|output)\s*:[^\n]*\n+/i;
+const DIVIDER_LINE = /^\s*(?:-{3,}|—{2,}|={3,}|\*{3,})\s*$/m;
+const TRANSCRIPT_LABEL = /^\s*(?:לקוח|אנחנו|user|customer)\s*:/m;
+const PROMPT_FURNITURE =
+  /ניתוח פנימי|הנחיה לתשובה הזו|ההודעה האחרונה של הלקוח|מאגר הידע|סדר הכתיבה|composeSystem|system prompt/i;
+
+function stripScaffold(text) {
+  let t = String(text || '');
+  // Only ever at the very top, and only once: a colon in the middle of a
+  // sentence is ordinary Hebrew.
+  t = t.replace(ROLE_HEADER, '');
+  t = t.replace(/^\s*(?:-{3,}|—{2,}|={3,})\s*\n+/, '');
+  return t.trim();
+}
+
+function leaksScaffold(text) {
+  const t = String(text || '');
+  return ROLE_HEADER.test(t) || DIVIDER_LINE.test(t)
+      || TRANSCRIPT_LABEL.test(t) || PROMPT_FURNITURE.test(t);
 }
 
 /** Roll the conversation summary forward without reprocessing full history. */
@@ -670,6 +723,8 @@ module.exports = {
   compose,
   updateSummary,
   enforceGuardrails,
+  stripScaffold,
+  leaksScaffold,
   trimToWholeSentence,
   parseJson,
   getLastCompose,

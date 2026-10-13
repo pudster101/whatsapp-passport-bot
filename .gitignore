@@ -10,3 +10,4 @@ trainer/__pycache__/
 # Editor/agent backups
 *.bak-*
 *.bak
+COMMITMSG.txt 

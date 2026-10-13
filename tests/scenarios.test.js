@@ -1130,12 +1130,36 @@ async function run() {
     check('an unrelated message books nothing',
       meeting.parseSlotChoice('אני עוד אחשוב על זה', slots) === null);
 
-    check('the gate needs relative, place AND year', (() => {
+    // The gate: a Romanian-born relative is required, plus ONE route fact.
+    // The three-fact version shut the gate on exactly the readiest leads —
+    // שופט מלי (born there herself, left 1960, documents in hand, score 96),
+    // אבי רבינוביץ (both parents, left 1964) and מרדכי כהן (left 1948,
+    // certificate in hand, score 100) were never asked which city, so none of
+    // them was ever offered a meeting.
+    check('a relative alone is not enough to spend an evening on', (() => {
       const p = leadProfile.create('972500000301');
+      p.eligibility = { ancestor: 'סבתא' };
+      return !meeting.isReadyForMeeting(p);
+    })());
+    check('relative plus the place they were born opens the gate', (() => {
+      const p = leadProfile.create('972500000311');
       p.eligibility = { ancestor: 'סבתא', birthPlace: 'יאשי' };
-      if (meeting.isReadyForMeeting(p)) return false;
-      p.eligibility.leftYear = '1961';
       return meeting.isReadyForMeeting(p);
+    })());
+    check('relative plus the year they left opens it too — אבי רבינוביץ', (() => {
+      const p = leadProfile.create('972500000312');
+      p.eligibility = { ancestor: 'הורים', leftYear: '1964' };
+      return meeting.isReadyForMeeting(p);
+    })());
+    check('documents already in hand open it — מרדכי כהן', (() => {
+      const p = leadProfile.create('972500000313');
+      p.eligibility = { ancestor: 'עצמי', hasDocuments: true };
+      return meeting.isReadyForMeeting(p);
+    })());
+    check('and no relative at all keeps it shut', (() => {
+      const p = leadProfile.create('972500000314');
+      p.eligibility = { birthPlace: 'יאשי', leftYear: '1961', hasDocuments: true };
+      return !meeting.isReadyForMeeting(p);
     })());
     check('someone who already said no is not asked again', (() => {
       const p = leadProfile.create('972500000302');
@@ -1170,14 +1194,20 @@ async function run() {
     const phone = newPhone();
     await say(phone, TRIGGER);
     await say(phone, 'סבתא שלי');
-    await say(phone, 'היא נולדה ביאשי');
-    const offer = await say(phone, 'עלתה ב-1961');
+    // The gate opens as soon as the route is clear enough to be worth an
+    // evening — a relative plus ONE of place / year / documents. It used to
+    // demand all three, and in two weeks of live traffic that produced zero
+    // offers against 34 leads whose route was clear.
+    const offer = await say(phone, 'היא נולדה ביאשי');
 
     check('a clear route triggers the meeting offer',
       /פגישה/.test(offer) && /אשכנזי 21/.test(offer), offer.slice(0, 80));
     check('the offer says it costs nothing', /ללא עלות/.test(offer));
     check('and the meeting is recorded as offered',
       profileOf(phone)?.meeting?.status === 'offered');
+
+    // The year still gets asked for — the offer does not swallow qualification.
+    await say(phone, 'עלתה ב-1961');
 
     const afterYes = await say(phone, 'כן בשמחה');
     check('saying yes asks for the details to hold the slot',
@@ -1390,6 +1420,504 @@ async function run() {
 
     storage.deleteConversation(agent);
     await storage.flush();
+  }
+
+  section('42. The office meeting is the close, not a phone call at 09:00');
+  {
+    // אבי רבינוביץ's file as it actually stood on 10 Oct: both parents born in
+    // Romania, left in 1964, name taken, number about to arrive. He was never
+    // asked which city, so under the old gate the meeting was unreachable —
+    // and the close he got was "בוקר (09:00-12:00) או אחר הצהריים".
+    const phone = newPhone();
+    const seeded = leadProfile.create(phone);
+    seeded.name = 'אבי רבינוביץ';
+    seeded.eligibility = { ...seeded.eligibility, ancestor: 'ההורים', leftYear: '1964' };
+    seeded.stage = 'QUALIFICATION';
+    storage.setConversation(phone, {
+      state: 'WELCOME_SENT', startedAt: new Date().toISOString(),
+      history: [{ role: 'assistant', text: 'ומה מספר הטלפון שלך?', at: new Date().toISOString() }],
+      profile: seeded,
+    });
+
+    const close = await say(phone, '052-2688218');
+
+    check('a captured lead is offered a real slot, not a morning window',
+      /בשעה 1[78]:00/.test(close), close.slice(0, 120));
+    check('the old "בוקר 09:00-12:00" close is gone for good',
+      !/09:00-12:00|14:00-18:00/.test(close), close.slice(0, 120));
+    check('the slot is in the office, with an address',
+      /אשכנזי 21/.test(close) || /משרד/.test(close), close.slice(0, 120));
+    check('and it is recorded as a meeting on the table',
+      profileOf(phone)?.meeting?.status === 'slots_proposed',
+      String(profileOf(phone)?.meeting?.status));
+    check('the lead itself was still captured',
+      !!profileOf(phone)?.name && !!profileOf(phone)?.clientPhone);
+
+    const w = await dashboard.weekly(7);
+    check('and the weekly page stops reporting zero meetings offered',
+      w.totals.meetingsOffered >= 1, String(w.totals.meetingsOffered));
+
+    // The old copy must not survive anywhere the model can copy it from.
+    const fs = require('fs');
+    const examples = fs.readFileSync(path.join(__dirname, '..', 'src', 'ai', 'examples.js'), 'utf8');
+    check('no example teaches the model the morning/afternoon phone close',
+      !/09:00-12:00|14:00-18:00/.test(examples));
+  }
+
+  section('43. A time given once is not asked for twice');
+  {
+    const closing = require('../src/sales/closing');
+
+    // Every one of these is a real answer a lead typed, and every one of them
+    // was followed by the identical question a minute later.
+    check('"אחהצ בסביבות 18" counts as a time — פרץ רוב, 4 Oct',
+      closing.alreadyScheduled('אחהצ בסביבות 18'));
+    check('"מ9 עד 12" counts as a time — שופט מלי, 13 Oct',
+      closing.alreadyScheduled('מ9 עד 12'));
+    check('"שעות אחה״צ." counts as a time — מרדכי כהן, 5 Oct',
+      closing.alreadyScheduled('שעות אחה״צ.'));
+    check('but "איתור לוקח 2-6 חודשים" is not an appointment',
+      !closing.alreadyScheduled('איתור המסמכים בארכיונים לוקח 2-6 חודשים'));
+    check('and neither is "אצור קשר מחר"',
+      !closing.alreadyScheduled('אצור קשר מחר'));
+    check('nor an age or a birth year',
+      !closing.alreadyScheduled('בן 80') &&
+      !closing.alreadyScheduled('נולדה ב-1916 ועזבה ב-1948'));
+
+    check('a handed-off lead who named a time is confirmed, not re-asked', (() => {
+      const p = leadProfile.create('972500000401');
+      p.name = 'מלי'; p.clientPhone = '0542403011';
+      const t = closing.callClose(p, { variant: 'handoff_confirmed' });
+      return /מועד שסיכמנו/.test(t) && !/מה נוח לך יותר|מתי נוח/.test(t);
+    })());
+
+    // End to end: the lead gives a time, and the whole turn asks nothing.
+    const phone = newPhone();
+    await say(phone, TRIGGER);
+    await say(phone, 'סבא שלי נולד בבוקרשט');
+    await say(phone, 'עזב ב-1961');
+    await say(phone, 'יוסי לוי');
+    await say(phone, '0541112222');
+    const after = await say(phone, 'אחהצ בסביבות 18');
+    const timeQuestions = (after.match(/מתי נוח|מה נוח לך יותר|בוקר או אחר הצהריים/g) || []).length;
+    check('no time question comes back after the lead named one',
+      timeQuestions === 0, after.slice(0, 140));
+  }
+
+  section('44. Nobody in the family is Romanian');
+  {
+    const scheduler = require('../src/followup/scheduler');
+    const ASK = '*מי במשפחה נולד ברומניה?* (הורה / סב / סבתא)';
+
+    check('"אין לנו רומנים בדורות הקודמים" is heard — 8 Oct',
+      leadProfile.signalsNoRomanianRelative('עד כמה שידוע לי, אין לנו רומנים בדורות הקודמים.'));
+    check('a bare "אף אחד." is heard, in answer to that question',
+      leadProfile.signalsNoRomanianRelative('אף אחד.', ASK));
+    check('but not in answer to a different question',
+      !leadProfile.signalsNoRomanianRelative('אף אחד.', 'יש לך תעודות של סבא?'));
+    check('"אין לי מסמכים" is the opposite of this and must not match',
+      !leadProfile.signalsNoRomanianRelative('אין לי מסמכים', ASK)
+      && !leadProfile.signalsNoRomanianRelative('אין לי תעודת לידה של אמא'));
+    check('"אין לי אם כך לא רלוונטי העניין עבורי" is heard — 4 Oct',
+      leadProfile.signalsNoRomanianRelative('אין לי אם כך לא רלוונטי העניין עבורי'));
+
+    const phone = newPhone();
+    await say(phone, TRIGGER);
+    const out = await say(phone, 'אין לנו רומנים במשפחה');
+
+    check('the bot says so plainly',
+      /אין בסיס|אין זכאות/.test(out), out.slice(0, 90));
+    check('and does not hand a non-lead to the lawyer',
+      !/מעביר את הפרטים|יחזור אליך אישית/.test(out), out.slice(0, 120));
+    check('and asks for no time and no number',
+      !/מתי נוח|מספר הטלפון|מה נוח לך יותר/.test(out), out.slice(0, 120));
+    check('the stage is "אין זכאות", not "הועבר לנציג"',
+      profileOf(phone)?.stage === 'NOT_ELIGIBLE', String(profileOf(phone)?.stage));
+    check('the door is left open',
+      /תכתוב לי|נבדוק שוב|בהצלחה/.test(out));
+
+    check('the follow-up engine will never write to them',
+      scheduler.evaluate(profileOf(phone)) === null);
+
+    // 8 Oct: told there was no basis, then chased on the 11th to ask which
+    // Romanian city the relative was born in, and again on the 12th.
+    const aged = profileOf(phone);
+    aged.lastInboundAt = new Date(Date.now() - 10 * 86400000).toISOString();
+    aged.stage = 'QUALIFICATION';           // even if the stage moved on
+    check('not even ten days later, whatever the stage says',
+      scheduler.evaluate(aged) === null);
+
+    check('and they are not counted as a human handoff',
+      !/HUMAN_HANDOFF/.test(String(profileOf(phone)?.stage)));
+  }
+
+  section('45. כן and לא are answers');
+  {
+    const phone = newPhone();
+    await say(phone, TRIGGER);
+    await say(phone, 'סבא שלי נולד בבוקרשט');
+    // מרדכי כהן answered "כן" to "יש לך נכדים מתחת לגיל 18?" and was told his
+    // message had arrived incomplete.
+    const yes = await say(phone, 'כן');
+    check('"כן" is not treated as a truncated message',
+      !/לא הגיע לי טקסט מלא|נשלחה חלקית/.test(yes), yes.slice(0, 80));
+
+    const phone2 = newPhone();
+    await say(phone2, TRIGGER);
+    const no = await say(phone2, 'לא');
+    check('"לא" is not either',
+      !/לא הגיע לי טקסט מלא|נשלחה חלקית/.test(no), no.slice(0, 80));
+
+    // A genuinely truncated message still gets the nudge.
+    const phone3 = newPhone();
+    await say(phone3, TRIGGER);
+    const junk = await say(phone3, 'ש');
+    check('but a stray single letter still does',
+      /לא הגיע לי טקסט מלא|נשלחה חלקית/.test(junk), junk.slice(0, 80));
+  }
+
+  section('46. Who was born in Romania — the phrasings leads actually use');
+  {
+    const read = (t) => {
+      const p = leadProfile.create(newPhone());
+      return flows.ruleBasedAnalysis(t, p).profileUpdates.eligibility;
+    };
+    // Four leads in two weeks said they were born in Romania themselves —
+    // פאני, מרדכי, שופט מלי and the lead of 3 Oct. None of them set `ancestor`,
+    // so every gate that needs to know who was born there stayed shut.
+    check('"אני ילידת רומניה" names the relative — פאני זילברמן',
+      !!read('אני ילידת רומניה אזרחית מעוניינת בדרכון לבני ונכדיי').ancestor);
+    check('"אני נולדתי ברומניה ועליתי ב-1948" gives relative and year — מרדכי כהן',
+      (() => { const e = read('אני נולדתי ברומניה ועליתי עם הורי ארצה ב 1948');
+               return !!e.ancestor && e.leftYear === '1948'; })());
+    check('"ההורים" counts as a relative — אבי רבינוביץ',
+      !!read('ההורים').ancestor);
+    check('"אבא ואמא" too — פרץ רוב',
+      !!read('אבא ואמא').ancestor);
+    check('"עליתי לישראל ב1960" is an emigration year, not a birth year — שופט מלי',
+      read('עליתי לישראל ב1960 בהיותי בת 3').leftYear === '1960');
+    check('a name answer is not mistaken for a relative — אבי רבינוביץ',
+      (() => {
+        const p = leadProfile.create(newPhone());
+        const s = { history: [{ role: 'assistant', text: 'מה שמך המלא?' }] };
+        const u = flows.ruleBasedAnalysis('אבי רבינוביץ', p, s).profileUpdates;
+        return u.name === 'אבי רבינוביץ' && !u.eligibility.ancestor;
+      })());
+  }
+
+  section('47. Language and gender stick to the customer');
+  {
+    const scheduler = require('../src/followup/scheduler');
+
+    check('Hebrew is detected', flows.detectLang('שלום, מה המצב') === 'he');
+    check('English is detected', flows.detectLang('Hello, can I get more info') === 'en');
+
+    // 8 Oct: opened in English, wrote Hebrew, and the replies alternated
+    // English / Hebrew / English across three consecutive turns.
+    const phone = newPhone();
+    await say(phone, 'Hello! Can I get more info on this?');
+    check('an English opener is recorded as English',
+      profileOf(phone)?.lang === 'en');
+    await say(phone, 'עד כמה שידוע לי, סבתא שלי נולדה ברומניה');
+    check('a switch to Hebrew sticks',
+      profileOf(phone)?.lang === 'he', String(profileOf(phone)?.lang));
+    await say(phone, 'ביאשי');
+    check('and it stays Hebrew on the next turn too',
+      profileOf(phone)?.lang === 'he', String(profileOf(phone)?.lang));
+
+    check('every follow-up step has English copy', (() => {
+      const steps = Object.values(scheduler.SEQUENCES).flat();
+      return steps.length > 0 && steps.every(s => typeof s.messageEn !== 'undefined');
+    })());
+    check('and no Hebrew leaks into it', (() => {
+      const p = { name: 'Dana', lang: 'en' };
+      return Object.values(scheduler.SEQUENCES).flat().every(s => {
+        const t = typeof s.messageEn === 'function' ? s.messageEn(p) : s.messageEn;
+        return !/[֐-׿]/.test(String(t));
+      });
+    })());
+
+    // שופט מלי, 13 Oct — called "אתה" four times.
+    check('"אני ילידת רומניה" reads as feminine — פאני, שופט מלי',
+      flows.detectGender('אני ילידת רומניה אזרחית') === 'f');
+    check('"בהיותי בת 3" reads as feminine — שופט מלי',
+      flows.detectGender('עליתי לישראל ב1960 בהיותי בת 3') === 'f');
+    check('"צריכה" reads as feminine',
+      flows.detectGender('אמרתי שצריכה דרכון') === 'f');
+    check('"יליד רומניה" reads as masculine',
+      flows.detectGender('אני יליד רומניה') === 'm');
+    check('"רוצה" is the same word in both genders and must not decide',
+      flows.detectGender('אני רוצה דרכון') === null);
+    check('neither does a sentence about a grandmother',
+      flows.detectGender('סבתא שלי נולדה ביאשי') === null);
+
+    check('the prompt forbids mixing genders in one message',
+      /אסור לערבב זכר ונקבה/.test(prompts.composePrompt
+        ? prompts.composePrompt({ profile: { gender: 'f' } }) || ''
+        : '') || /אסור לערבב/.test(require('fs')
+        .readFileSync(path.join(__dirname, '..', 'src', 'ai', 'prompts.js'), 'utf8')));
+  }
+
+  section('48. The prompt\'s furniture never reaches a customer');
+  {
+    // Word for word what יצחק פוקס received on 5 Oct at 17:42.
+    const real = 'מדבר: עוזר משרד פודים\n\n---\n\nמצוין! 🙂 אמא שלך נולדה במוינשט ב-1925 ועלתה ב-1948.';
+
+    check('a role header is detected as scaffolding',
+      brain.leaksScaffold(real));
+    check('and stripped, keeping the answer underneath',
+      (() => {
+        const out = brain.stripScaffold(real);
+        return out.startsWith('מצוין!') && !/מדבר:/.test(out) && !/---/.test(out);
+      })(), brain.stripScaffold(real).slice(0, 40));
+    check('a stripped reply then passes the guardrails',
+      brain.enforceGuardrails(brain.stripScaffold(real), { eligibility: {} }) !== null);
+
+    check('a bare divider line fails the reply over to the script',
+      brain.leaksScaffold('מעולה 🙂\n\n---\n\nמה שמך?'));
+    check('a transcript label does too',
+      brain.leaksScaffold('לקוח: אני מעוניין\nאנחנו: מצוין'));
+    check('and so does the internal analysis block',
+      brain.leaksScaffold('ניתוח פנימי: כוונה ask_cost') &&
+      brain.leaksScaffold('ההודעה האחרונה של הלקוח: שלום'));
+    check('guardrails reject it outright',
+      brain.enforceGuardrails('מעולה 🙂\n\n---\n\nמה שמך?', { eligibility: {} }) === null);
+
+    // Ordinary Hebrew that happens to contain a colon must survive untouched.
+    const fine = 'שלושה שלבים: הסדרת האזרחות, הוצאת המסמכים, ובקשה לדרכון.';
+    check('an ordinary sentence with a colon is left alone',
+      !brain.leaksScaffold(fine) && brain.stripScaffold(fine) === fine);
+    const alsoFine = 'מה שמך המלא? ואם נוח לך להתקשר: 03-5517801';
+    check('and so is a phone number after a colon',
+      !brain.leaksScaffold(alsoFine) && brain.stripScaffold(alsoFine) === alsoFine);
+  }
+
+  section('49. Twenty documents is not a 7/100 lead');
+  {
+    const phone = newPhone();
+    await say(phone, TRIGGER);
+    await say(phone, 'סבא וסבתא');
+
+    const sendFile = async (name, type = 'document') => {
+      sent.length = 0;
+      await flows.handleMessage(phone, {
+        type, id: `f${Math.random()}`,
+        [type]: { id: `media${Math.random()}`, filename: name, mime_type: 'application/pdf' },
+      });
+      return sent.map(s => s.text).join('\n');
+    };
+
+    const first = await sendFile('Birth Certificate Or Harel HD.pdf');
+    check('the file is acknowledged', /קיבלתי/.test(first), first.slice(0, 60));
+    check('and the name is asked for in the same breath',
+      /מה שמך המלא/.test(first), first.slice(0, 160));
+    check('documents are recorded as being in hand',
+      profileOf(phone)?.eligibility?.hasDocuments === true);
+
+    const p1 = profileOf(phone);
+    check('one file already makes this a lead worth calling',
+      (p1?.buyingIntent || 0) >= 70, String(p1?.buyingIntent));
+    check('and the stage moves to high intent',
+      p1?.stage === 'HIGH_INTENT', String(p1?.stage));
+
+    // The burst window suppresses the chatter but must still record and score.
+    await sendFile('photo1.jpg', 'image');
+    await sendFile('photo2.jpg', 'image');
+    const p2 = profileOf(phone);
+    check('a pile of files scores higher than one',
+      (p2?.buyingIntent || 0) >= 85, String(p2?.buyingIntent));
+    check('every file is kept, not just the first',
+      (p2?.documents || []).length === 3, String((p2?.documents || []).length));
+
+    check('the scorer counts files in the file, not talk about files', (() => {
+      const withTalk = scoring.score('יש לי תעודת לידה', leadProfile.create(newPhone()));
+      const withFiles = scoring.score('', { ...leadProfile.create(newPhone()), documents: [1, 2, 3] });
+      return withFiles.score > withTalk.score;
+    })());
+
+    const hot = await dashboard.hotList(50);
+    check('the lead is on the hot list now',
+      hot.some(r => r.phone === phone && r.score >= 70),
+      JSON.stringify(hot.find(r => r.phone === phone)?.score));
+  }
+
+  section('50. The weekly page and the waiting list tell the same story');
+  {
+    const phone = newPhone();
+    // גנץ פנינה's file as it stood on 13 Oct: score 100, handed over, a number
+    // on file, idle 289 hours — and marked handled.
+    storage.setConversation(phone, {
+      state: 'COMPLETE',
+      startedAt: new Date(Date.now() - 12 * 86400000).toISOString(),
+      history: [],
+      profile: {
+        ...leadProfile.create(phone),
+        name: 'גנץ פנינה',
+        clientPhone: '0523364545',
+        buyingIntent: 100,
+        stage: 'HUMAN_HANDOFF',
+        humanStatus: 'handled',
+        messageCount: 25,
+        firstSeenAt: new Date(Date.now() - 12 * 86400000).toISOString(),
+        lastInboundAt: new Date(Date.now() - 289 * 3600000).toISOString(),
+      },
+    });
+    await storage.flush();
+
+    const week = await dashboard.weekly(14);
+    const waiting = dashboard.waitingForCallback();
+
+    check('a handled lead is off the waiting list',
+      !waiting.some(r => r.phone === phone));
+    check('and off the weekly "nobody called them" list too',
+      !week.unhandledHot.some(r => r.phone === phone),
+      JSON.stringify(week.unhandledHot.find(r => r.phone === phone)));
+    check('the two lists agree about her', (() => {
+      const onWeekly = week.unhandledHot.some(r => r.phone === phone);
+      const onWaiting = waiting.some(r => r.phone === phone);
+      return onWeekly === onWaiting;
+    })());
+
+    // Un-handle her and both lists must pick her up again.
+    const back = storage.getConversation(phone);
+    back.profile.humanStatus = 'notified';
+    storage.setConversation(phone, back);
+    await storage.flush();
+
+    const week2 = await dashboard.weekly(14);
+    check('un-marking her puts her back on both',
+      week2.unhandledHot.some(r => r.phone === phone)
+      && dashboard.waitingForCallback().some(r => r.phone === phone));
+
+    const hot = await dashboard.hotList(100);
+    check('the hot list reports handled status and document count per row',
+      hot.length > 0 && hot.every(r =>
+        typeof r.handled === 'boolean' && typeof r.documents === 'number'));
+
+    check('the weekly page counts leads with no Romanian relative',
+      typeof week2.totals.notEligible === 'number');
+    check('and counts documents received',
+      typeof week2.totals.documentsReceived === 'number');
+
+    storage.deleteConversation(phone);
+    await storage.flush();
+  }
+
+  section('51. No conversion without a name and a number');
+  {
+    check('the stage cannot be set to CONVERSION on an empty file', (() => {
+      let p = leadProfile.create(newPhone());
+      p.stage = 'DISCOVERY';
+      p = leadProfile.merge(p, { stage: 'CONVERSION' });
+      return p.stage === 'HIGH_INTENT';
+    })());
+    check('but it can once the details are there', (() => {
+      let p = leadProfile.create(newPhone());
+      p.name = 'דנה לוי'; p.clientPhone = '0541234567';
+      p = leadProfile.merge(p, { stage: 'CONVERSION' });
+      return p.stage === 'CONVERSION';
+    })());
+    check('a name with no number is still not a conversion', (() => {
+      let p = leadProfile.create(newPhone());
+      p.name = 'דנה לוי';
+      p = leadProfile.merge(p, { stage: 'CONVERSION' });
+      return p.stage !== 'CONVERSION';
+    })());
+
+    // "אצור קשר מחר" is the customer saying SHE will call US.
+    check('"אצור קשר מחר" is not an appointment we made',
+      !closing.alreadyScheduled('אצור קשר מחר'));
+
+    const phone = newPhone();
+    await say(phone, TRIGGER);
+    await say(phone, 'הורים של בעלי');
+    await say(phone, 'צריך לבדוק נראה לי 1943');
+    await say(phone, 'אצור קשר מחר');
+    const p = profileOf(phone);
+    check('and the file does not claim a conversion — 12 Oct',
+      p?.stage !== 'CONVERSION', String(p?.stage));
+    check('nor is a lead saved for someone we cannot reach',
+      !p?.name || !p?.clientPhone);
+  }
+
+  section('52. The lead who never answered the welcome');
+  {
+    const scheduler = require('../src/followup/scheduler');
+    const hoursAgo = (n) => new Date(Date.now() - n * 3600000).toISOString();
+    const silent = (extra = {}) => ({
+      ...leadProfile.create(newPhone()),
+      stage: 'INITIAL_ENGAGEMENT',
+      messageCount: 1,
+      ...extra,
+    });
+
+    check('half an hour is too soon',
+      scheduler.evaluate(silent({ lastInboundAt: hoursAgo(0.5) })) === null);
+    check('about an hour later, one nudge is due',
+      scheduler.evaluate(silent({ lastInboundAt: hoursAgo(1.5) }))?.stage === 'FIRST_TOUCH');
+    check('two days later the moment has gone and nothing is sent',
+      scheduler.evaluate(silent({ lastInboundAt: hoursAgo(48) })) === null);
+    check('and it is only ever sent once',
+      scheduler.evaluate(silent({ lastInboundAt: hoursAgo(2), followUpsSent: 1 })) === null);
+    check('a lead who did reply gets the normal sequences, not this',
+      scheduler.evaluate(silent({ lastInboundAt: hoursAgo(2), messageCount: 4 })) === null);
+    check('someone with no Romanian relative is never nudged',
+      scheduler.evaluate(silent({ lastInboundAt: hoursAgo(2), notEligible: true })) === null);
+    check('neither is someone who already left a number',
+      scheduler.evaluate(silent({ lastInboundAt: hoursAgo(2), clientPhone: '0541234567' })) === null);
+    check('nor someone who opted out',
+      scheduler.evaluate(silent({ lastInboundAt: hoursAgo(2), optedOut: true })) === null);
+
+    const due = scheduler.evaluate(silent({ lastInboundAt: hoursAgo(2) }));
+    const copy = due.step.message({});
+    check('the nudge asks one question and makes no pitch',
+      (copy.match(/\?/g) || []).length === 1 && !/עלות|מחיר|פגישה|שיחה עם/.test(copy), copy);
+    check('it gives them a way out',
+      /אין בעיה|לא הזמן/.test(copy));
+    check('and it has English copy for the English arm',
+      typeof due.step.messageEn === 'function'
+      && !/[֐-׿]/.test(due.step.messageEn({})));
+  }
+
+  section('53. The transcript is what was actually sent');
+  {
+    // Three replies in the 8–10 Oct transcripts end mid-word. The messages went
+    // out whole; it was the stored history that was cut at 500 characters — so
+    // the owner could not audit what was said, and the model was shown its own
+    // last turn truncated and repeated whole passages it had already sent.
+    const phone = newPhone();
+    // Push through the real path so the limit under test is the real one.
+    await say(phone, TRIGGER);
+    const hist = storage.getConversation(phone)?.history || [];
+    check('a stored message is no longer clipped at 500 characters',
+      hist.every(h => h.text.length <= 2000)
+      && hist.some(h => h.role === 'assistant'),
+      String(hist.length));
+
+    const flowsSrc = require('fs')
+      .readFileSync(path.join(__dirname, '..', 'src', 'flows.js'), 'utf8');
+    check('and the limit is wide enough for a full legal passage',
+      /MAX_HISTORY_TEXT = 2000/.test(flowsSrc));
+    check('nothing still slices history at 500',
+      !/text: String\(text\)\.slice\(0, 500\)/.test(flowsSrc));
+  }
+
+  section('54. The city spellings leads actually type');
+  {
+    // Both of these were missed, so neither file ever recorded a birthplace —
+    // and the birthplace is what decides the route.
+    check('"ביאש" is Iași — פאני זילברמן, 8 Oct',
+      leadProfile.detectPlace('נולדתי ביאש')?.territory === 'moldavia_ro');
+    check('"מוינשט" is Moinești — יצחק פוקס, 5 Oct',
+      leadProfile.detectPlace('אמא נולדה במוינשט')?.territory === 'moldavia_ro');
+    check('"בוטושן" is Botoșani — עמית אהרונוביץ׳, 4 Oct',
+      leadProfile.detectPlace('אבא נולד בבוטושן')?.territory === 'moldavia_ro');
+    check('"נסאוד" is in Transylvania, not Moldavia — עופר, 10 Oct',
+      leadProfile.detectPlace('נסאוד 1948')?.territory === 'transylvania');
+    check('and Herța still points at Article 11',
+      leadProfile.detectPlace('בהרצה')?.article === '11');
+    check('while a Romanian birthplace still sets no article',
+      leadProfile.detectPlace('ביאש')?.article === null);
   }
 
   section('41. The template catalog matches the code');

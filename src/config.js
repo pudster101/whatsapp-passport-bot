@@ -110,6 +110,8 @@ module.exports = {
   OFFICE_TLV: 'אשכנזי 21, תל אביב · 03-5517801',
   OFFICE_JLM: 'יפו 33, בית יואל, ירושלים · 02-6249286',
 
-  MEETING_DAYS: ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי'],
-  MEETING_HOURS: ['09:00', '10:00', '11:00', '12:00', '14:00', '15:00', '16:00', '17:00'],
+  // Office-meeting days and hours live in src/sales/meeting.js (Sun–Thu,
+  // 17:00 and 18:00). They used to be duplicated here as 09:00–17:00, which is
+  // not when the office takes meetings — nothing read these, but anything that
+  // started to would have offered the wrong hours.
 };

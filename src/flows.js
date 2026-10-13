@@ -128,10 +128,17 @@ function detectLang(text) {
 // next to a Hebrew letter. And every masculine form here is a prefix of its
 // feminine counterpart ("מעוניין" inside "מעוניינת"), so each one carries a
 // lookahead that refuses the feminine ending.
+//
+// Added after 13 Oct: שופט מלי wrote "נולדתי", "עליתי לישראל ב1960 בהיותי בת 3",
+// "אני נישבעתי כבר מזמן בקונסוליה" and "שאלתי, כמה יעלה לי" — and was called
+// "אתה" four times before the bot switched. None of the patterns above covered
+// the way she actually wrote. "ילידת/יליד" and "בהיותי בת/בן" are unambiguous
+// and both appeared verbatim in live chats; "רוצה" and "נישבעתי" are identical
+// in both genders and are deliberately absent.
 const FEMININE_SELF =
-  /(?:מעוניינת|מתעניינת|מבררת|בודקת|נשואה|גרושה|אלמנה|מבקשת|שמחתי|אני צריכה|אני יכולה|אני מבינה|אני שואלת|אני מחפשת|אני חושבת|אני גרה|אני בטוחה)/;
+  /(?:מעוניינת|מתעניינת|מבררת|בודקת|נשואה|גרושה|אלמנה|מבקשת|שמחתי|צריכה|יכולה|ילידת|בהיותי בת|אני בת \d|אני יכולה|אני מבינה|אני שואלת|אני מחפשת|אני חושבת|אני גרה|אני בטוחה)/;
 const MASCULINE_SELF =
-  /(?:מעוניין(?!ת)|מתעניין(?!ת)|מברר(?!ת)|בודק(?!ת)|נשוי|גרוש(?!ה)|אלמן(?!ה)|מבקש(?!ת)|אני צריך|אני יכול(?!ה)|אני מבין(?!ה)|אני שואל(?!ת)|אני מחפש(?!ת)|אני חושב(?!ת)|אני גר(?!ה)|אני בטוח(?!ה))/;
+  /(?:מעוניין(?!ת)|מתעניין(?!ת)|מברר(?!ת)|בודק(?!ת)|נשוי|גרוש(?!ה)|אלמן(?!ה)|מבקש(?!ת)|צריך|יליד(?!ת)|בהיותי בן|אני בן \d|אני יכול(?!ה)|אני מבין(?!ה)|אני שואל(?!ת)|אני מחפש(?!ת)|אני חושב(?!ת)|אני גר(?!ה)|אני בטוח(?!ה))/;
 
 function detectGender(text) {
   const t = String(text || '');
@@ -177,10 +184,21 @@ function loadSession(phone) {
   return { session, isNew: false };
 }
 
+// 500 characters was clipping the bot's own messages in the middle of a word.
+// Three transcripts from 8–10 October end mid-sentence — "כדי שנוכל לחזור אל",
+// "רוצה שעו" — which is also what the model is shown as its own last turn, so
+// it could not tell it had already said something and repeated whole passages.
+// Sessions are JSONB in Postgres; keeping the message whole costs nothing.
+const MAX_HISTORY_TEXT = 2000;
+
 function pushHistory(session, role, text) {
   if (!text) return;
   session.history = session.history || [];
-  session.history.push({ role, text: String(text).slice(0, 500), at: new Date().toISOString() });
+  session.history.push({
+    role,
+    text: String(text).slice(0, MAX_HISTORY_TEXT),
+    at: new Date().toISOString(),
+  });
   if (session.history.length > MAX_HISTORY) {
     session.history = session.history.slice(-MAX_HISTORY);
   }
@@ -377,6 +395,36 @@ async function handleMessage(phone, message) {
       mediaId: media.id, type: msgType, filename, mime: media.mime_type,
     });
     console.log(`📎 [${phone}] ${msgType} received — id=${media.id} name=${filename}`);
+
+    // Sending documents is the strongest buying signal there is, and it counted
+    // for nothing. On 8 Oct one lead sent a voice note, nineteen photographs, a
+    // birth-certificate PDF and a death certificate inside four minutes. His
+    // score was 7/100, his stage was DISCOVERY, nobody ever asked his name, and
+    // three days later he got the generic "נזכרתי בשאלה ששאלת" follow-up.
+    //
+    // Nobody digs through a drawer for a 1950s birth certificate to pass the
+    // time. The score moves with the first file and keeps moving, the documents
+    // go in the file as a known fact, and once there are a few the owner is
+    // told in person rather than one line per image.
+    profile.eligibility = profile.eligibility || {};
+    if (profile.eligibility.hasDocuments !== true) {
+      profile.eligibility.hasDocuments = true;
+    }
+    const fileCount = profile.documents.length;
+    const wasScore = profile.buyingIntent || 0;
+    profile.buyingIntent = Math.min(100, Math.max(wasScore, fileCount >= 3 ? 85 : 70));
+    profile.stage = stages.shouldAdvance(profile.stage, 'HIGH_INTENT');
+    if (profile.buyingIntent !== wasScore) {
+      console.log(`📈 [${phone}] documents received → score ${wasScore} → ${profile.buyingIntent}`);
+      storage.logEvent(phone, 'hot_lead', {
+        reason: 'documents_received', files: fileCount, score: profile.buyingIntent,
+      });
+    }
+    // One alert when the pile becomes a pile, not one per photograph.
+    if (fileCount === 3) {
+      handoff.notifyHotLead(profile)
+        .catch(e => console.warn('⚠️ document hot-lead notify:', e.message));
+    }
     handoff.notifyAgents(
       `📎 *${profile.name || '+' + phone}* שלח/ה ${msgType === 'document' ? 'מסמך' : 'תמונה'}: ${filename}\n\n` +
       // The alert already carries the client's name and number, so a working
@@ -418,11 +466,26 @@ async function handleMessage(phone, message) {
     profile.lastInboundAt = new Date(now).toISOString();
     profile.messageCount = (profile.messageCount || 0) + 1;
     pushHistory(session, 'user', text);
-    await reply(phone, session, profile.lang === 'en'
-      ? `Got it — the file is saved and has been passed to Mr. Pudim, who will ` +
-        `go over it himself. \u{1F4C4}\n\nYou can send more if you have them.`
-      : `קיבלתי — הקובץ נשמר והועבר לעו״ד פודים, שיעבור עליו בעצמו. 📄\n\n` +
-        `אם יש עוד מסמכים, אפשר לשלוח גם אותם.`);
+
+    // And ask for the one thing we still need. The lead who sent twenty files
+    // was never asked his name, so there was nobody to call about them.
+    const ackHe = `קיבלתי — הקובץ נשמר והועבר לעו״ד פודים, שיעבור עליו בעצמו. 📄\n\n` +
+                  `אם יש עוד מסמכים, אפשר לשלוח גם אותם.`;
+    const ackEn = `Got it — the file is saved and has been passed to Mr. Pudim, who will ` +
+                  `go over it himself. \u{1F4C4}\n\nYou can send more if you have them.`;
+    let ack = profile.lang === 'en' ? ackEn : ackHe;
+
+    if (!profile.name) {
+      ack += profile.lang === 'en'
+        ? `\n\nSo he can match the files to you — *what is your full name?*`
+        : `\n\nכדי שיֵדע לקשר את המסמכים אליך — *מה שמך המלא?*`;
+    } else if (!profile.clientPhone && !(profile.contactRefusals > 0)) {
+      ack += profile.lang === 'en'
+        ? `\n\nAnd what number should he call you on, ${profile.name}?`
+        : `\n\nולאיזה מספר שיחזור אליך, ${profile.name}?`;
+    }
+
+    await reply(phone, session, ack);
     save(phone, session);
     return;
   } else {
@@ -574,7 +637,18 @@ async function handleMessage(phone, message) {
   // them through the sales pipeline produced a full sales turn every morning
   // for three weeks. Answer briefly, in a way that invites a real message, and
   // do not spend an AI call on it.
-  if (text && text.trim().length <= 2 && !/^\d+$/.test(text.trim())) {
+  // "כן" and "לא" are two characters long and they are the two most common
+  // answers in the language. מרדכי כהן answered "כן" to "יש לך נכדים מתחת
+  // לגיל 18?" — the single most important question in his file — and was told
+  // "לא הגיע לי טקסט מלא, אפשר לכתוב שוב?". So did a lead on 4 Oct who wrote
+  // "לא". A real answer must never be treated as a truncated message.
+  const MEANINGFUL_SHORT = new Set([
+    'כן', 'לא', 'ok', 'אוק', 'נו', 'מה', 'למה', 'איך', 'כמה', 'מתי', 'מי',
+    'yes', 'no', 'הי', 'היי', 'תודה', 'סבא', 'אמא', 'אבא', 'יש', 'אין',
+  ]);
+  const trimmed = (text || '').trim();
+  if (trimmed && trimmed.length <= 2 && !/^\d+$/.test(trimmed)
+      && !MEANINGFUL_SHORT.has(trimmed.toLowerCase())) {
     profile.lastInboundAt = new Date().toISOString();
     profile.messageCount = (profile.messageCount || 0) + 1;
     pushHistory(session, 'user', text);
@@ -583,6 +657,36 @@ async function handleMessage(phone, message) {
       'לא הגיע לי טקסט מלא — אפשר לכתוב שוב?',
     ];
     await reply(phone, session, nudges[(profile.messageCount || 0) % nudges.length]);
+    save(phone, session);
+    return;
+  }
+
+  // ── Nobody in the family was born in Romania ──────────────────────────────
+  // Say so plainly, once, and then stop: no sales close, no handoff, and no
+  // follow-up three days later asking which Romanian city they came from.
+  const lastBot = [...(session.history || [])].reverse()
+    .find(m => m.role === 'assistant')?.text || '';
+  if (!profile.eligibility?.ancestor && !profile.notEligible
+      && leadProfile.signalsNoRomanianRelative(text, lastBot)) {
+    profile.lastInboundAt = new Date().toISOString();
+    profile.messageCount = (profile.messageCount || 0) + 1;
+    pushHistory(session, 'user', text);
+
+    profile.notEligible = true;
+    profile.followUpsSuppressed = true;
+    profile.stage = stages.shouldAdvance(profile.stage, 'NOT_ELIGIBLE');
+    storage.logEvent(phone, 'not_eligible', { text: String(text).slice(0, 120) });
+
+    await reply(phone, session, profile.lang === 'en'
+      ? `Understood — without a relative born in Romania there is no basis for ` +
+        `Romanian citizenship, and I would rather tell you that than keep you ` +
+        `here. \u{1F642}\n\n` +
+        `If something turns up later — an old family story, a document, a name ` +
+        `that was changed — write to me and we will take another look. All the best!`
+      : `מובן — בלי בן משפחה שנולד ברומניה אין בסיס לאזרחות רומנית, ואני מעדיף ` +
+        `לומר לך את זה מראש. 🙂\n\n` +
+        `אם בעתיד יתברר משהו — סיפור משפחתי, מסמך ישן, שם שהשתנה — פשוט תכתוב לי ` +
+        `ונבדוק שוב. בהצלחה בכל מקרה!`);
     save(phone, session);
     return;
   }
@@ -755,11 +859,23 @@ async function handleInterestRomanianCourse(phone, session) {
 async function handleFreeText(phone, session, text, opts = {}) {
   const profile = session.profile;
 
-  // A lead can switch languages mid-conversation, and an unlabelled session
-  // (anything that started before this existed) gets labelled on first use.
-  if (!profile.lang) profile.lang = detectLang(text) || 'he';
-  else if (profile.lang === 'he' && detectLang(text) === 'en'
-           && (profile.messageCount || 0) <= 1) profile.lang = 'en';
+  // The language the customer is being answered in.
+  //
+  // On 8 Oct one conversation flipped three times: it opened in English, the
+  // lead replied in Hebrew and got English back, then Hebrew, then English
+  // again — and the two follow-ups three days later were in Hebrew. The cause
+  // was that `lang` was only ever set on the first message and the reply
+  // language was decided from whatever the current message happened to be.
+  //
+  // So: the customer's own language wins and it is REMEMBERED. A lead who
+  // switches to Hebrew is answered in Hebrew from then on, including by the
+  // follow-up engine, which reads this field.
+  const wrote = detectLang(text);
+  if (!profile.lang) profile.lang = wrote || 'he';
+  else if (wrote && wrote !== profile.lang) {
+    console.log(`🗣️  [${phone}] language switched ${profile.lang} → ${wrote}`);
+    profile.lang = wrote;
+  }
 
   // Lock the grammatical gender the first time the customer reveals it.
   if (!profile.gender) {
@@ -838,36 +954,62 @@ async function handleFreeText(phone, session, text, opts = {}) {
   // 3b. Contact details just completed — confirm it. Anything else here
   //     (a generic "I didn't understand") would be a terrible experience
   //     right at the moment of conversion.
-  const historyText = (session.history || []).map(h => h.text).join(' ');
+  // Only the CUSTOMER can agree to a time. Scanning the whole history meant
+  // the bot's own words counted as an agreement — and now that the office slots
+  // print a real clock time ("יום שני, 13.10 בשעה 17:00"), every lead who was
+  // merely OFFERED a slot would have read as already booked.
+  const historyText = (session.history || [])
+    .filter(h => h.role === 'user')
+    .map(h => h.text)
+    .join(' ');
   const timeAgreed = closing.alreadyScheduled(historyText) || closing.alreadyScheduled(text);
 
   if (!hadContact && leadProfile.hasContactDetails(p)) {
     p.stage = stages.shouldAdvance(p.stage, 'CONVERSION');
     session.state = 'COMPLETE';
 
-    // The details were just collected in order to hold a meeting slot. Asking
-    // "morning or afternoon for a phone call?" here contradicts the booking the
-    // customer is in the middle of — go straight to the times.
+    // This is THE moment of the conversation: the name and the number just
+    // landed. For two weeks every single lead who reached it — פרץ, עמית,
+    // מחמד, מרדכי, יצחק פוקס, פאני, עופר, שופט מלי, eight out of eight —
+    // was asked "morning (09:00-12:00) or afternoon (14:00-18:00)?" for a
+    // PHONE CALL, in hours that are not the office's meeting hours, with no
+    // mention of the office at all. The meeting flow was live in the code and
+    // never once reached a customer from here.
+    //
+    // So the office meeting is now the default close whenever the route is
+    // clear enough to be worth an evening. The phone call is the fallback, not
+    // the goal.
     const pending = leadProfile.ensureMeeting(p);
-    if (pending.accepted && !['requested', 'confirmed'].includes(pending.status)) {
+    const canBook = !['requested', 'confirmed'].includes(pending.status)
+                    && (pending.accepted || meeting.isReadyForMeeting(p));
+
+    if (canBook) {
       const slots = meeting.nextSlots({
         count: 2, taken: meeting.takenSlots(storage.getAllConversations()),
       });
-      pending.offered = slots;
-      pending.status = slots.length ? 'slots_proposed' : 'offered';
-      await reply(phone, session,
-        `🎉 מצוין, ${p.name} — רשמתי.\n\n${meeting.slotPrompt(slots, pending.mode)}`);
-      await maybeSaveLead(phone, session);
-      save(phone, session);
-      return;
+      if (slots.length) {
+        pending.offered = slots;
+        pending.offeredAt = new Date().toISOString();
+        pending.status = 'slots_proposed';
+        storage.logEvent(phone, 'meeting_offered', {
+          at: 'lead_captured', mode: pending.mode, slots: slots.map(s => s.iso),
+        });
+        await reply(phone, session,
+          `🎉 מצוין, ${p.name} — רשמתי.\n\n${meeting.slotPrompt(slots, pending.mode)}`);
+        await maybeSaveLead(phone, session);
+        save(phone, session);
+        return;
+      }
     }
 
     const isCourse = p.interest?.includes('b1_course');
     // If a time was already agreed earlier in the conversation, asking again is
-    // what made a lead on 5 Sep repeat "בבוקר" three times.
+    // what made a lead on 5 Sep repeat "בבוקר" three times — and what made
+    // פרץ רוב, who had just written "אחהצ בסביבות 18", get the identical
+    // question back one minute later on 4 Oct.
     const ask = timeAgreed
       ? `נתראה במועד שסיכמנו. אם משהו משתנה — *${closing.OFFICE_PHONE}*.`
-      : `*מתי נוח לך?* בוקר (09:00-12:00) או אחר הצהריים (14:00-18:00)?`;
+      : closing.nextContactAsk(p);
     await reply(phone, session, isCourse
       ? `🎉 *תודה, ${p.name}!*\n\nקיבלנו את הפרטים לגבי *קורס הרומנית B1*.\n\n${ask}`
       : `🎉 *מצוין, ${p.name}!*\n\nהפרטים אצלנו ועו״ד פודים יחזור אליך אישית.\n\n${ask}\n\n` +
@@ -1044,10 +1186,17 @@ async function handleFreeText(phone, session, text, opts = {}) {
     }
   }
 
-  if (terminalTurn) {
+  // A lead with no Romanian-born relative gets no close of any kind. On 4 Oct
+  // one was told "אני מכבד את זה, בהצלחה בכל מה שתעשו" and then, in the same
+  // message, "מעביר את הפרטים לעו״ד פודים שיחזור אליך אישית — היום אחר הצהריים
+  // או מחר בבוקר?". He had left neither a name nor a number, and his file still
+  // says HUMAN_HANDOFF.
+  if (terminalTurn && !p.notEligible && p.stage !== 'NOT_ELIGIBLE') {
     const before = replyText;
     replyText = closing.ensureCallClose(replyText, p, {
-      variant: decision.escalate ? 'handoff'
+      variant: decision.escalate
+                 // The customer already named a time — confirm it, never ask again.
+                 ? (timeAgreed ? 'handoff_confirmed' : 'handoff')
              // A second close hard on the heels of the first gets the short form.
              : departing ? (sinceClose <= 2 ? 'departing_brief' : 'departing')
              : undefined,
@@ -1310,7 +1459,19 @@ const INTENT_PHRASES = [
   ['greeting',       ['שלום', 'היי', 'הי', 'בוקר טוב', 'ערב טוב', 'מה נשמע']],
 ];
 
-const ANCESTOR_RE = /(סבתא רבתא|סבא רבא|סבתא|סבתי|סבא|סבי|אמא|אימא|אבא|אבי|אמי|הורה|דודה|דוד)(\s*(?:שלי|מצד\s*(?:אמא|אבא|אמי|אבי|האם|האב)))?/;
+const ANCESTOR_RE = /(סבתא רבתא|סבא רבא|שני ההורים|אבא ואמא|אמא ואבא|ההורים|הוריי|הורים|הורי|סבתא|סבתי|סבא|סבי|אמא|אימא|אבא|אבי|אמי|הורה|דודה|דוד)(\s*(?:שלי|מצד\s*(?:אמא|אבא|אמי|אבי|האם|האב)))?/;
+
+/**
+ * The lead IS the Romanian-born relative.
+ *
+ * "אני ילידת רומניה", "אני נולדתי ברומניה ועליתי ב-1948" — four leads in the
+ * first half of October opened exactly like that: פאני זילברמן, מרדכי כהן,
+ * שופט מלי and the lead of 3 Oct. ANCESTOR_RE never matched any of them (and
+ * "אני" is on the not-a-name list), so `ancestor` stayed empty, and with it
+ * shut every gate that depends on knowing who was born in Romania — including
+ * the office meeting. They are the shortest route the firm has.
+ */
+const SELF_BORN_RE = /יליד(?:ת|ה)?\s+רומניה|נולדתי\s+(?:ב)?רומניה|אני\s+נולדתי\s+שם/;
 const NAME_RE = /(?:קוראים לי|שמי|השם שלי|אני נקרא(?:ת)?)\s+([֐-׿]+(?:\s+[֐-׿]+)?)/;
 
 /**
@@ -1390,7 +1551,11 @@ function ruleBasedAnalysis(text, profile, session = null) {
 
   // Deciding whether a year is a BIRTH year or an EMIGRATION year matters a
   // great deal — the emigration year is what classifies the legal route.
-  const EMIGRATION_VERB = /על[התו]|עלייה|עלינו|עזב|הגיע|הגיעה|יצא|יצאה|ברח|ברחה|בא לארץ|באה לארץ|הגירה/;
+  // "עליתי לישראל ב-1960" did not match: /על[התו]/ wants ה/ת/ו after "על",
+  // and "עליתי" has a yod. So the year of the single most important fact in the
+  // file — when they left — was filed as a BIRTH year instead. שופט מלי wrote
+  // "עליתי לישראל ב1960 בהיותי בת 3" and her emigration year was never set.
+  const EMIGRATION_VERB = /עלי(?:תי|נו|ת)|על[התו]|עלייה|עזב|הגע(?:תי|נו)|הגיע|הגיעה|יצא|יצאה|ברח|ברחה|בא(?:תי|נו)? לארץ|באה לארץ|הגירה|היגר/;
   const BIRTH_VERB = /נולד|נולדה|לידה/;
 
   let birthYear = null, leftYear = null;
@@ -1423,8 +1588,16 @@ function ruleBasedAnalysis(text, profile, session = null) {
     if (!e.leftYear) leftYear = sorted[sorted.length - 1];
   }
 
+  const selfBorn = SELF_BORN_RE.test(text);
+
   const eligibility = {
-    ancestor: !e.ancestor && ancestorMatch ? ancestorMatch[0].trim() : null,
+    // A message we are reading as the answer to "מה שמך?" is a name, not a
+    // relative. "אבי רבינוביץ" otherwise files אבי — his own first name — as
+    // the Romanian-born relative.
+    ancestor: e.ancestor || bareName ? null
+            : selfBorn ? 'הלקוח/ה עצמו/ה (נולד/ה ברומניה)'
+            : ancestorMatch ? ancestorMatch[0].trim()
+            : null,
     birthYear,
     leftYear,
     birthPlace: !e.birthPlace && place ? place.place : null,
@@ -1777,6 +1950,8 @@ module.exports = {
   showInterestButtons,
   isTriggerMessage,
   normalise,
+  detectLang,
+  detectGender,
   ruleBasedAnalysis,
   maybeSaveLead,
 };

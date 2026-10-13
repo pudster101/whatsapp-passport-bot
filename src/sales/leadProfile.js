@@ -111,6 +111,16 @@ function merge(profile, updates = {}) {
     }
 
     if (key === 'stage') {
+      // CONVERSION means "we have a name and a number and somebody will call".
+      // It is a fact about the file, not a reading of the mood. On 12 Oct a
+      // lead wrote "אצור קשר מחר" — *she* would call *us* — and the analysis
+      // moved her to CONVERSION with no name, no number and a summary claiming
+      // "תור קבוע לשיחה עם עו״ד פודים מחר". There was no appointment and
+      // nobody to ring. So the stage cannot be conjured without the details.
+      if (value === 'CONVERSION' && !hasContactDetails(out)) {
+        out.stage = stages.shouldAdvance(out.stage, 'HIGH_INTENT');
+        continue;
+      }
       out.stage = stages.shouldAdvance(out.stage, value);
       continue;
     }
@@ -159,7 +169,8 @@ const TERRITORY_HINTS = [
   { match: /בסרביה|כישינב|קישינב|מולדובה|chisinau|basarabia/i,          territory: 'bessarabia',     article: '11' },
   { match: /בוקובינה|צ׳רנוביץ|צרנוביץ|צ'רנוביץ|chernivtsi|bukovina/i,  territory: 'bukovina',       article: '11' },
   { match: /הרצה|herta|hertsa/i,                                        territory: 'hertsa',         article: '11' },
-  { match: /טרנסילבניה|קלוז|ברשוב|סיביו|transylvania|cluj|brasov/i,     territory: 'transylvania',   article: null },
+  { match: /טרנסילבניה|קלוז|ברשוב|סיביו|נסאוד|nasaud|ביסטריצה|bistrita|transylvania|cluj|brasov/i,
+    territory: 'transylvania',   article: null },
   // Maramureș is in Romania. On 6 Sep the bot told a client that Vișeu de Sus
   // is "Ukraine today" and therefore Article 11 — it is not, and the client
   // was given the wrong route on the strength of it.
@@ -168,7 +179,12 @@ const TERRITORY_HINTS = [
   // Moldavia — the Romanian region, not the Republic of Moldova. Iași and
   // Roman sit here, and both were called "areas that passed to Ukraine" in a
   // live conversation on 7 Sep. They did not; they are in Romania.
-  { match: /יאשי|יאסי|iasi|רומן\b|roman\b|בקאו|bacau|פיאטרה|piatra|דורוחוי|dorohoi|בוטושאני|botosani|סוצ׳אבה|סוצאבה|suceava|וסלוי|vaslui|פוקשאני|focsani/i,
+  // Spellings taken from live chats, not from a gazetteer. "ביאש" (8 Oct,
+  // פאני זילברמן) and "מוינשט" (5 Oct, יצחק פוקס) were both missed, so neither
+  // file ever got a birthplace — and the route is decided on the birthplace.
+  // Note the order: "יאש" must come after "יאשי"/"יאסי" only if those are
+  // longer matches, which they are, so the alternation lists them first.
+  { match: /יאשי|יאסי|יאש|iasi|רומן\b|roman\b|בקאו|bacau|פיאטרה|piatra|מוינשט|מוינסט|moinesti|דורוחוי|dorohoi|בוטושאני|בוטושן|botosani|סוצ׳אבה|סוצאבה|suceava|וסלוי|vaslui|פוקשאני|focsani/i,
     territory: 'moldavia_ro', article: null },
   { match: /בוקרשט|bucharest|גלאץ|galati|קונסטנצה|constanta|פלוישט|ploiesti|קרייובה|craiova|בראילה|braila|אורדיה|oradea|ארד\b|arad/i,
     territory: 'romania_proper', article: null },
@@ -346,6 +362,53 @@ function hasContactDetails(profile) {
 }
 
 /**
+ * "There are no Romanians in my family."
+ *
+ * On 8 Oct a lead said exactly that, in two messages, and the bot answered
+ * honestly: without a Romanian-born relative there is no basis here. Good. Then
+ * two things happened that should not have: the handoff line "מעביר את הפרטים
+ * לעו״ד פודים שיחזור אליך אישית" was appended, and three days later the
+ * follow-up engine wrote to ask *which city in Romania* the relative was born
+ * in. On 4 Oct the same thing happened to a lead who wrote "אין לי אם כך לא
+ * רלוונטי העניין עבורי" — his file is stored as HUMAN_HANDOFF to this day.
+ *
+ * `lastBotText` matters: "אף אחד" is only an answer about relatives when that
+ * is what was asked. And "אין לי מסמכים" is never this — it is the opposite,
+ * a lead worth pursuing.
+ */
+const NO_RELATIVE_EXPLICIT = [
+  /אין\s+(?:לנו|לי|במשפחה|אצלנו)\s+(?:שום\s+)?(?:רומנ|מוצא\s+רומנ|קשר\s+לרומ|קרוב)/,
+  /לא\s+(?:היו|היה)\s+(?:לנו|לי)\s+(?:שום\s+)?רומנ/,
+  /אין\s+(?:שום\s+)?רומנ(?:ים|יה|י)\s+(?:ב|אצל)/,
+  /אף\s+אחד\s+לא\s+נולד\s+ב?רומניה/,
+  /לא\s+רומני(?:ם|ה)?\s*$/,
+  // "אין לי אם כך לא רלוונטי העניין עבורי" — 4 Oct, after being told the
+  // investment route he had read about does not exist.
+  // No \b after "לי": \b is ASCII-only and never matches beside a Hebrew
+  // letter, which is the oldest trap in this codebase.
+  /אין\s+(?:לי|לנו)[\s\S]{0,40}(?:לא\s+רלוונטי|לא\s+מתאים|לא\s+מעוניין)/,
+];
+/** Bare answers that only mean "no relative" in reply to that exact question. */
+const NO_RELATIVE_BARE = [
+  /^\s*אף\s+אחד\s*[.!]?\s*$/,
+  /^\s*אין\s+(?:לי|לנו)\s*[.!]?\s*$/,
+  /^\s*לא,?\s*(?:לא\s+)?(?:נראה|נרא)\s+לי\s*[.!]?\s*$/,
+  /^\s*אין\s+אף\s+אחד\s*[.!]?\s*$/,
+];
+const ASKED_ABOUT_RELATIVE =
+  /מי\s+במשפחה\s+נולד|באיזה\s+דור|מי\s+נולד\s+ברומניה|הורה\s*\/\s*סב|בן\s+משפחה\s+(?:כזה|שנולד)/;
+
+function signalsNoRomanianRelative(text, lastBotText = '') {
+  const t = String(text || '').replace(/[״"׳']/g, '');
+  if (!t.trim()) return false;
+  if (/מסמכ|תעוד|דרכון|נייר/.test(t)) return false;   // "אין לי מסמכים" is not this
+  if (NO_RELATIVE_EXPLICIT.some(re => re.test(t))) return true;
+  if (ASKED_ABOUT_RELATIVE.test(String(lastBotText || ''))
+      && NO_RELATIVE_BARE.some(re => re.test(t))) return true;
+  return false;
+}
+
+/**
  * The meeting record, created on demand.
  * Sessions that started before meetings existed have no such field.
  */
@@ -424,6 +487,7 @@ module.exports = {
   missingFacts,
   isQualified,
   hasContactDetails,
+  signalsNoRomanianRelative,
   ensureMeeting,
   summarise,
   fromLegacySession,

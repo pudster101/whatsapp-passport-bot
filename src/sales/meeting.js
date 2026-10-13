@@ -298,15 +298,33 @@ function reminderText(profile = {}, slot, mode = 'office') {
 /**
  * Is this lead ready to be offered a meeting?
  *
- * Stricter than leadProfile.isQualified, deliberately: an office meeting costs
- * the owner an evening, so the route has to be worth sitting down over. That
- * means we know WHO was born in Romania, WHERE, and WHEN they left — the three
- * facts that decide the route.
+ * The first version of this gate demanded all three facts — who was born in
+ * Romania, where, and when they left. It produced ZERO meeting offers in the
+ * first two weeks, against 34 leads whose route was clear, because the bot
+ * stops asking "which city?" the moment it has enough to answer the question:
+ *
+ *   • שופט מלי, 13 Oct, score 96 — born in Romania herself, left in 1960,
+ *     documents in hand. Never asked which city. Gate shut.
+ *   • אבי רבינוביץ — both parents born in Romania, left 1964. Never asked
+ *     which city. Gate shut.
+ *   • מרדכי כהן, score 100 — left in 1948, minor grandchildren, certificate
+ *     in hand. Gate shut.
+ *
+ * So: WHO is still required — without a Romanian-born relative there is no
+ * case to sit down over. Beyond that, ONE of the three facts that actually
+ * decide the route is enough to be worth an evening: the year they left, the
+ * place they were born, or documents already in hand. The rest is exactly what
+ * the meeting is for.
  */
 function isReadyForMeeting(profile = {}) {
   const e = profile.eligibility || {};
   if (profile.optedOut) return false;
-  if (!e.ancestor || !e.birthPlace || !e.leftYear) return false;
+  if (!e.ancestor) return false;
+
+  const hasRouteFact = !!e.leftYear || !!e.birthPlace || e.hasDocuments === true
+                       || !!e.likelyArticle;
+  if (!hasRouteFact) return false;
+
   const m = profile.meeting || {};
   if (m.status === 'requested' || m.status === 'confirmed') return false;
   if ((m.declines || 0) >= 1) return false;          // asked once, said no — let it go

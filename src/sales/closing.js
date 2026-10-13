@@ -81,6 +81,17 @@ function callClose(profile = {}, opts = {}) {
            `ואם נוח לך להתקשר: *${OFFICE_PHONE}* · ${HOURS}`;
   }
 
+  // The customer has ALREADY told us when. Asking again in the same breath is
+  // what happened to שופט מלי on 13 Oct: she answered "מ9 עד 12", the bot
+  // confirmed "רשמתי — בוקר, 9 עד 12 · להתראות בקרוב!" and then, in the very
+  // same message, asked "היום לקראת סוף היום או מחר בבוקר — מה נוח לך יותר?".
+  // פאני got three different time questions in three consecutive messages.
+  if (variant === 'handoff_confirmed') {
+    return `מעביר את הפרטים לעו״ד פודים שיחזור אליך אישית — לא נציג, הוא עצמו, ` +
+           `במועד שסיכמנו.\n\n` +
+           `ואם משהו משתנה: *${OFFICE_PHONE}* · ${HOURS}`;
+  }
+
   if (variant === 'ask_phone') {
     const lines = [
       `אני מציע שנקבע שיחה קצרה עם עו״ד פודים עצמו — הוא יעבור על המקרה ויגיד ` +
@@ -149,6 +160,21 @@ function alreadyScheduled(text) {
   const t = String(text || '').replace(/\d{1,2}[:.]\d{2}\s*[-–—]\s*\d{1,2}[:.]\d{2}/g, '');
   return (
     /\b\d{1,2}[:.]\d{2}\b/.test(t) ||          // a single clock time: 09:30
+    // People answer with bare hours, and three live leads were asked the same
+    // question twice because none of these matched:
+    //   פרץ רוב, 4 Oct    "אחהצ בסביבות 18"
+    //   שופט מלי, 13 Oct  "מ9 עד 12"  →  and the bot asked again in the same breath
+    //   מרדכי כהן, 5 Oct  "שעות אחה\"צ."
+    // "מ9 עד 12" / "בין 17 ל-19". Bounded to real hours and blocked before a
+    // duration unit, because "איתור לוקח 2-6 חודשים" is not an appointment —
+    // matching it suppressed the closing line on every objection turn.
+    /(?:מ-?\s*)?\b(?:[7-9]|1\d|2[0-3])\s*עד\s*(?:[7-9]|1\d|2[0-3])\b(?!\s*(?:חודשים|חודש|שנים|שנה|שבועות|שבוע|ימים|יום|דורות))/.test(t) ||
+    /בין\s*(?:[7-9]|1\d|2[0-3])\s*(?:ל-?|[-–—])\s*(?:[7-9]|1\d|2[0-3])\b(?!\s*(?:חודשים|חודש|שנים|שנה|שבועות|שבוע|ימים|יום))/.test(t) ||
+    // "אחהצ בסביבות 18" — an hour with a clock preposition in front of it.
+    /(?:בסביבות|בשעה|מהשעה|אחרי|לפני)\s*(?:[7-9]|1\d|2[0-3])\b(?!\s*(?:חודשים|חודש|שנים|שנה|ימים|יום|דורות))/.test(t) ||
+    // "שעות אחה״צ" — but NOT a bare "בבוקר", which appears in the bot's own
+    // two-window question and would make every close look already-booked.
+    /ב?שעות\s+(?:ה?בוקר|ה?צהריים|ה?ערב|אחה[״"']?צ)/.test(t) ||
     /(?:מחכה|נתראה|נדבר|מדברים)\s+(?:ל?שיחה|מחר|ביום)/.test(t) ||
     /קבענו|סגרנו על|נקבע ל/.test(t) ||
     // A customer who answers "יום ראשון בבוקר" or "מחר אחר הצהריים" HAS chosen

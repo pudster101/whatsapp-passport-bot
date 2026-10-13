@@ -39,6 +39,7 @@ const SIGNALS = [
   { key: 'full_details',  points: 15, phrases: [] }, // set programmatically
 
   // ─── Moderate interest ───────────────────────────────────────────────────
+  { key: 'sent_documents', points: 30, phrases: [] }, // set programmatically
   { key: 'ask_documents', points: 10, phrases: ['יש לי תעודה', 'יש לי מסמך', 'יש לי תעודת לידה', 'המסמכים שלי', 'מה צריך להביא'] },
   { key: 'ask_children',  points: 10, phrases: ['הילדים שלי', 'לילדים שלי', 'הבן שלי', 'הבת שלי', 'לנכדים'] },
   { key: 'ask_time',      points: 8,  phrases: ['כמה זמן', 'כמה זה לוקח', 'לוח זמנים', 'מתי אקבל'] },
@@ -83,6 +84,15 @@ function score(text = '', profile = {}, aiSignals = null) {
   if (e.ancestor && e.birthYear && e.birthPlace) {
     matched.push('full_details');
     delta += 15;
+  }
+  // Files actually in the file, not a sentence about files. Saying "יש לי
+  // תעודת לידה" is worth 10 points above; opening the drawer, photographing a
+  // 1950s certificate and sending it is worth a great deal more, and until now
+  // it was worth nothing at all.
+  const files = (profile.documents || []).length;
+  if (files > 0) {
+    matched.push('sent_documents');
+    delta += files >= 3 ? 30 : 20;
   }
 
   let base = typeof profile.buyingIntent === 'number' ? profile.buyingIntent : 0;

@@ -18,9 +18,14 @@ const STAGES = {
   FOLLOW_UP:          { order: 10, label: 'מעקב',               goal: 'להחזיר לשיחה עם ערך' },
   HUMAN_HANDOFF:      { order: 11, label: 'הועבר לנציג',        goal: 'הלקוח בטיפול אנושי' },
   LOST_NOT_NOW:       { order: 12, label: 'לא עכשיו',           goal: 'לשמור על קשר לטווח ארוך' },
+  // Nobody in the family was born in Romania. Not a lost sale and not a lead —
+  // a question honestly answered. It gets its own stage so the bot stops
+  // selling, the follow-up engine leaves them alone, and the weekly page can
+  // show how much of the ad spend is simply landing on people with no case.
+  NOT_ELIGIBLE:       { order: 13, label: 'אין זכאות',          goal: 'לסגור בכנות ולא להטריד' },
 };
 
-const TERMINAL = ['CONVERSION', 'HUMAN_HANDOFF', 'LOST_NOT_NOW'];
+const TERMINAL = ['CONVERSION', 'HUMAN_HANDOFF', 'LOST_NOT_NOW', 'NOT_ELIGIBLE'];
 
 /** Map the legacy FSM state onto a funnel stage, so old sessions keep working. */
 const FROM_FSM_STATE = {
@@ -49,8 +54,10 @@ function shouldAdvance(current, proposed) {
   if (!isValid(current)) return proposed;
   if (!isValid(proposed)) return current;
 
-  // Objection and handoff can interrupt from anywhere
-  if (proposed === 'OBJECTION' || proposed === 'HUMAN_HANDOFF' || proposed === 'LOST_NOT_NOW') {
+  // Objection, handoff and a plain "there is no case here" interrupt from
+  // anywhere — the last one because it is a fact, not a stage in a funnel.
+  if (proposed === 'OBJECTION' || proposed === 'HUMAN_HANDOFF'
+      || proposed === 'LOST_NOT_NOW' || proposed === 'NOT_ELIGIBLE') {
     return proposed;
   }
   // Never drag a converted customer backwards

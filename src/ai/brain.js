@@ -417,6 +417,28 @@ const COMPARATIVE_FEE = [
   /(?:יקר|זול)\s+(?:בהרבה|פי|משמעותית)/,
 ];
 
+/**
+ * A bare amount used as a price anchor.
+ *
+ * FEE_PATTERNS only catch an amount with a currency next to it. But when a
+ * lead says "משרד אחר אמר 7,000 — אתם מעל 10,000?", the bot can quote a price
+ * without a shekel sign at all: on 1 Sep it answered "10,000 זה לא הגיוני",
+ * which tells her we are under 10,000. Confirming, denying or judging a number
+ * the lead brought is naming a price in other words.
+ *
+ * An amount is a number written with a thousands separator, a 4-6 digit number
+ * that is not a year (1900-2099 are years of departure, the core of every
+ * eligibility answer), or "N אלף". It only counts in a sentence about money.
+ */
+const BARE_AMOUNT = /(?:\d{1,3}(?:,\d{3})+|(?<![\d,.])(?!(?:19|20)\d{2}(?!\d))\d{4,6}(?![\d,.])|\d+\s*אלף|אלפי\s*שקלים)/;
+const MONEY_CONTEXT = /(?:מחיר|עלות|עולה|עלה\s+לי|שכר\s*טרחה|יקר|זול|מנפח|טווח|הגיוני|סביר|מעל|מתחת|פחות\s+מ|יותר\s+מ|הכל\s+כלול|לשלם|תשלום|תקציב|שקל|ש״ח|ש"ח)/;
+
+function anchorsPrice(text) {
+  return String(text || '')
+    .split(/(?<=[.!?\n])/)
+    .some(sentence => BARE_AMOUNT.test(sentence) && MONEY_CONTEXT.test(sentence));
+}
+
 const PROMISE_PATTERNS = [
   /מבטיח(?:ים)?\s+(?:ש|לך|לכם)?\s*(?:הבקשה|האזרחות|שתקבל|אישור)/i,
   /100%\s*(?:הצלחה|אישור|מובטח)/i,
@@ -601,6 +623,10 @@ function enforceGuardrails(text, profile = null) {
       console.warn(`🛑 Guardrail: fee quoted in AI reply → "${m[0]}"`);
       return null;
     }
+  }
+  if (anchorsPrice(text)) {
+    console.warn('🛑 Guardrail: reply judges or repeats a price amount');
+    return null;
   }
   if (COMPARATIVE_FEE.some(re => re.test(text))) {
     console.warn('🛑 Guardrail: comparative fee claim');

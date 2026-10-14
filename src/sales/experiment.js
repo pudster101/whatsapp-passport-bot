@@ -73,9 +73,28 @@ const OPENING_EN = {
      '«not sure» and we will take it from there.',
 };
 
+/**
+ * A greeting with no question in it — for a lead whose first message already
+ * IS a question.
+ *
+ * Both openings end by asking something ("מי במשפחה נולד ברומניה?"). That is
+ * right for someone who clicked the ad and typed the trigger phrase. It is
+ * wrong for someone who opened with "אני זכאי אם סבתא נולדה בבוקרשט ב-39?":
+ * they get asked the thing they just told us, and only then the answer. The
+ * trainer's "אבי" read it as not being listened to by the second line.
+ */
+const GREETING = {
+  he: 'היי! \u{1F44B} כאן המשרד של עו\u05F4ד יהונתן פודים.',
+  en: "Hi! \u{1F44B} This is the office of Yehonatan Pudim, Attorney at Law.",
+};
+
+function greetingOnly(lang) {
+  return GREETING[lang === 'en' ? 'en' : 'he'];
+}
+
 function opening(variant, lang) {
   const table = lang === 'en' ? OPENING_EN : OPENING;
   return table[variant] || table.A;
 }
 
-module.exports = { VARIANTS, assign, opening, OPENING, OPENING_EN };
+module.exports = { VARIANTS, assign, opening, greetingOnly, OPENING, OPENING_EN, GREETING };

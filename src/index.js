@@ -154,7 +154,7 @@ app.post('/webhook', async (req, res) => {
             console.error(`❌ Flow error for ${phone}:`, err);
             // Never leave a customer hanging because of our bug
             await wa.sendText(phone,
-              'סליחה, נתקלתי בתקלה רגעית. 🙏\nאפשר לנסות שוב, או לכתוב *נציג* ואעביר אותך לעו״ד מהמשרד.'
+              'סליחה, נתקלתי בתקלה רגעית. 🙏\nאפשר לנסות שוב, או לכתוב *נציג* ואעביר אותך לעו״ד פודים.'
             ).catch(() => {});
           }
         }

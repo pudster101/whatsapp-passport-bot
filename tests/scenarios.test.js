@@ -1920,6 +1920,67 @@ async function run() {
       leadProfile.detectPlace('ביאש')?.article === null);
   }
 
+  section('55. Trainer findings, 1 Sep — fixed 14 Oct');
+  {
+    // A list heading with the list cut off ("מכאן שלושה מסלולים:")
+    const passage = require('../src/kb/corpus').PASSAGES
+      ?.find(p => p.id === 'groups_overview')?.text || '';
+    const trimmed = flows.trimToWhatsApp(passage, 480);
+    check('a trimmed passage never ends on a heading that promises a list',
+      trimmed.length > 0 && !/:\s*$/.test(trimmed), trimmed.slice(-60));
+    check('and the groups passage no longer stops at "מכאן שלושה מסלולים:"',
+      !/מכאן שלושה מסלולים:\s*$/.test(trimmed));
+
+    // "מעביר את הפרטים" with no details to pass
+    const noPhone = closing.callClose({ name: 'שירה' }, { variant: 'handoff' });
+    check('a handoff with no phone on file does not claim to pass details on',
+      !noPhone.includes('מעביר את הפרטים'), noPhone);
+    check('and asks for the number instead',
+      /מספר/.test(noPhone) && noPhone.includes(closing.OFFICE_PHONE));
+    const withPhone = closing.callClose({ name: 'שירה', clientPhone: '0527364829' }, { variant: 'handoff' });
+    check('with a phone on file the handoff is unchanged',
+      withPhone.includes('מעביר את הפרטים'));
+
+    // A price anchored on a number the lead brought
+    check('"10,000 זה לא הגיוני" is blocked — it tells her we are under 10,000',
+      brain.enforceGuardrails('10,000 זה לא הגיוני, ולא הייתי רוצה שתלכי עם ההנחה הזו.') === null);
+    check('"7000 זה מחיר סביר" is blocked',
+      brain.enforceGuardrails('7000 זה מחיר סביר') === null);
+    check('"פחות מ-10 אלף" is blocked',
+      brain.enforceGuardrails('זה יוצא פחות מ-10 אלף') === null);
+    check('but departure years in a money sentence still pass',
+      brain.enforceGuardrails('מי שעזב בשנים 1964-1967 לא איבד את האזרחות, והעלות נגזרת מהתיק.') !== null);
+    check('and the office phone number is not an amount',
+      brain.enforceGuardrails('אם נוח לך להתקשר לגבי העלות: 03-5517801.') !== null);
+    check('the prompt forbids reacting to a quoted amount',
+      /אל תגיב לסכום שהלקוח הביא/.test(prompts.composeSystem({}, [], [])));
+
+    // One name for the lawyer
+    const fs = require('fs');
+    const srcDir = path.join(__dirname, '..', 'src');
+    const offenders = [];
+    (function walk(d) {
+      for (const f of fs.readdirSync(d)) {
+        const full = path.join(d, f);
+        if (fs.statSync(full).isDirectory()) walk(full);
+        else if (f.endsWith('.js') && fs.readFileSync(full, 'utf8').includes('עו״ד מהמשרד')) offenders.push(f);
+      }
+    })(srcDir);
+    check('nothing the bot sends says "עו״ד מהמשרד" any more', offenders.length === 0, offenders.join(', '));
+
+    // A first message that is already a question
+    const avi = newPhone();
+    const first = await say(avi, 'היי, אני זכאי לרומני אם הסבתא שלי נולדה בבוקרשט ב-39?');
+    const greeting = sent[0]?.text || '';
+    check('a lead who opens with a question is not asked "מי במשפחה נולד ברומניה?" first',
+      !/מי במשפחה נולד ברומניה/.test(greeting), greeting);
+    check('and still gets a greeting from the office', /עו״ד יהונתן פודים/.test(greeting));
+    check('and no menu is pushed at them', !sent.some(m => m.type === 'list'));
+    const trig = newPhone();
+    const trigReply = await say(trig, TRIGGER);
+    check('the ad trigger still gets the full opening with its question', /\?/.test(trigReply));
+  }
+
   section('41. The template catalog matches the code');
   {
     const fs = require('fs');

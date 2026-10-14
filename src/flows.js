@@ -553,8 +553,7 @@ async function handleMessage(phone, message) {
       storage.logEvent(phone, 'max_messages_reached', { messageCount: profile.messageCount });
       await reply(phone, session,
         `דיברנו כאן לא מעט, ואני חושב שהשלב הבא צריך להיות שיחה אמיתית. 🙂\n\n` +
-        `מעביר את הפרטים לעו״ד פודים שיחזור אליך אישית.\n` +
-        `ואם נוח לך להתקשר: *03-5517801* · א׳–ה׳ 09:00-18:00`
+        closing.callClose(profile, { variant: 'handoff' })
       );
       handoff.notifyHandoff(profile, 'שיחה ארוכה מאוד — הגיעה לתקרת ההודעות')
         .catch(e => console.warn('⚠️ handoff notify:', e.message));
@@ -747,9 +746,18 @@ async function handleStart(phone, session, opts = {}) {
       firstMessage: opts.firstMessage || null,
     });
   }
+  // A lead who opened with a real question gets a one-line hello and then the
+  // answer — not our question first. Asking "מי במשפחה נולד ברומניה?" to
+  // someone who just wrote "סבתא נולדה בבוקרשט" is the opposite of listening.
+  const opensWithQuestion = !!(opts.firstMessage &&
+    !isTriggerMessage(opts.firstMessage) && opts.firstMessage.length > 8);
   const welcome = returning
-    ? `היי${profile.name ? ` ${profile.name}` : ''}! 👋 טוב לשמוע ממך שוב.\n\nבמה אוכל לעזור הפעם?`
-    : experiment.opening(profile.openingVariant, profile.lang);
+    ? (opensWithQuestion
+        ? `היי${profile.name ? ` ${profile.name}` : ''}! 👋 טוב לשמוע ממך שוב.`
+        : `היי${profile.name ? ` ${profile.name}` : ''}! 👋 טוב לשמוע ממך שוב.\n\nבמה אוכל לעזור הפעם?`)
+    : (opensWithQuestion
+        ? experiment.greetingOnly(profile.lang)
+        : experiment.opening(profile.openingVariant, profile.lang));
 
   await reply(phone, session, welcome);
   save(phone, session);
@@ -760,7 +768,7 @@ async function handleStart(phone, session, opts = {}) {
     .catch(e => console.warn('⚠️ chat-start notify failed:', e.message));
 
   // If they opened with a real question rather than the trigger, answer it too
-  if (opts.firstMessage && !isTriggerMessage(opts.firstMessage) && opts.firstMessage.length > 8) {
+  if (opensWithQuestion) {
     await new Promise(r => setTimeout(r, 800));
     await handleFreeText(phone, session, opts.firstMessage, { skipHistory: true });
   }
@@ -1384,7 +1392,7 @@ async function showEligibilityAssessment(phone, session) {
 
   await reply(phone, session,
     `תודה! ${assessment}${summary ? `\n\n_מה שמסרת:_\n${summary}` : ''}\n\n${route}` +
-    `כדי לאמת את זה מול הרשויות ברומניה, *עו״ד מהמשרד צריך לעבור על המקרה*.\n\n` +
+    `כדי לאמת את זה מול הרשויות ברומניה, *עו״ד פודים צריך לעבור על המקרה*.\n\n` +
     `נשמח לחזור אליך לתיאום שיחת ייעוץ — *מה שמך המלא?*`
   );
 }
@@ -1760,8 +1768,10 @@ function avoidRepetition(session, text) {
   // Twice already — stop asking and hand over rather than wear the customer down
   if (attempts >= 2) {
     session.repeatCount = 0;
+    // callClose('handoff') already says who will call back — and, without a
+    // phone on file, asks for one instead of claiming to pass on details.
     return `נראה שאני לא מצליח להתקדם כאן, ואני מעדיף לא להתיש אותך. 🙏\n\n` +
-           `אעביר את הפרטים לעו״ד פודים שיחזור אליך אישית.\n\n` + closing.callClose(session.profile, { variant: 'handoff' });
+           closing.callClose(session.profile, { variant: 'handoff' });
   }
 
   const prefix = REPHRASE_PREFIXES[(attempts - 1) % REPHRASE_PREFIXES.length];
@@ -1776,7 +1786,7 @@ function avoidRepetition(session, text) {
 const LEAD_INS = ['', 'שאלה טובה. ', 'בקצרה — ', 'נקודה חשובה כאן — ', ''];
 
 const CONTACT_ASKS = [
-  'רוצה שעו״ד מהמשרד יעבור על המקרה שלך? *מה שמך המלא?*',
+  'רוצה שעו״ד פודים עצמו יעבור על המקרה שלך? *מה שמך המלא?*',
   'אם תרצה שנבדוק את זה לעומק — *איך קוראים לך?*',
   'כדי שנוכל לחזור אליך עם תשובה מדויקת — *מה שמך המלא?*',
 ];
@@ -1797,9 +1807,16 @@ function trimToWhatsApp(text, budget = 480) {
     used += line.length + 1;
   }
   // Walk back to the last line that closes a thought.
+  //
+  // A line ending in ":" does NOT close a thought — it promises a list. On
+  // 1 Sep the trainer's "אבי" asked a simple eligibility question and got the
+  // groups passage cut right after "מכאן שלושה מסלולים:", with the three
+  // routes themselves missing. A heading with nothing under it is worse than
+  // no heading, so it goes too.
   while (out.length > 1) {
     const last = out[out.length - 1].trim();
-    if (!last || /[.!?:•]$/.test(last) || /[.!?]["'״׳]?$/.test(last)) break;
+    if (last && !/:$/.test(last) &&
+        (/[.!?•]$/.test(last) || /[.!?]["'״׳]?$/.test(last))) break;
     out.pop();
   }
   return out.join('\n').trim();
@@ -1935,12 +1952,12 @@ function fallbackFor(analysis, profile, text = '', session = null, forceCta = fa
   if (leadProfile.isQualified(profile) && !leadProfile.hasContactDetails(profile)) {
     const route = routeSummary(profile);
     if (!profile.name) {
-      return `${route}כדי שעו״ד מהמשרד יעבור על המקרה שלך ויחזור אליך — *מה שמך המלא?*`;
+      return `${route}כדי שעו״ד פודים יעבור על המקרה שלך ויחזור אליך — *מה שמך המלא?*`;
     }
     return `${route}מעולה, *${profile.name}*. ומה *מספר הטלפון* שלך לחזרה?`;
   }
   return `לא בטוח שהבנתי במדויק — אפשר לנסח קצת אחרת? 🙏\n\n` +
-         `או שאעביר אותך לעו״ד מהמשרד שיענה לך ישירות. פשוט כתוב *נציג*.`;
+         `או שאעביר אותך לעו״ד פודים שיענה לך ישירות. פשוט כתוב *נציג*.`;
 }
 
 module.exports = {
@@ -1954,4 +1971,5 @@ module.exports = {
   detectGender,
   ruleBasedAnalysis,
   maybeSaveLead,
+  trimToWhatsApp,
 };

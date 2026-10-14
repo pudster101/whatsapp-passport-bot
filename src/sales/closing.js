@@ -75,6 +75,16 @@ function callClose(profile = {}, opts = {}) {
     return `מובן. 🙂 המספר כאן אם תרצה: *${OFFICE_PHONE}* · ${HOURS} — תבקש את עו״ד פודים.`;
   }
 
+  // "מעביר את הפרטים" is only true when there ARE details to pass. On 1 Sep
+  // the trainer's שירה was told it twice in a row before she had given a
+  // number — a promise of a call that could not happen. Without a phone, the
+  // handoff has to ask for one (or leave the office number), not claim it.
+  if ((variant === 'handoff' || variant === 'handoff_confirmed') && !hasPhone) {
+    return `אשמח שעו״ד פודים עצמו יחזור אליך — לא נציג, הוא עצמו. ` +
+           `*לאיזה מספר הוא יכול להתקשר?*\n\n` +
+           `ואם נוח לך יותר להתקשר בעצמך: *${OFFICE_PHONE}* · ${HOURS}`;
+  }
+
   if (variant === 'handoff') {
     return `מעביר את הפרטים לעו״ד פודים שיחזור אליך אישית — לא נציג, הוא עצמו.\n\n` +
            `*${when} — מה נוח לך יותר?*\n` +

@@ -107,6 +107,8 @@ def reset_bot_session(session_id: str) -> None:
 # ─── שליחת הודעה ────────────────────────────────────────────────────────────
 
 def send_to_my_bot(message: str, session_id: str = "default", dry_run: bool = False) -> str:
+    global last_reply_meta
+    last_reply_meta = {}
     mode = resolve_mode()
 
     if dry_run and mode != "real":
@@ -123,8 +125,13 @@ def send_to_my_bot(message: str, session_id: str = "default", dry_run: bool = Fa
     return _send_mock(message, session_id, dry_run)
 
 
+# מקור התשובה האחרונה — AI או תסריט, ולמה. הסימולטור שומר את זה בתמליל.
+last_reply_meta: dict = {}
+
+
 def _send_http(message: str, session_id: str) -> str:
     import requests
+    global last_reply_meta
     r = requests.post(
         BOT_URL,
         json={"session_id": session_id, "message": message},
@@ -133,6 +140,16 @@ def _send_http(message: str, session_id: str) -> str:
     r.raise_for_status()
     data = r.json()
 
+    last_reply_meta = {
+        "source": "ai" if data.get("ai_used") else "script",
+        "ai_error": data.get("ai_error"),
+        "blocked_by": data.get("ai_blocked_by"),
+        "rewritten_after": data.get("ai_rewritten_after"),
+    }
+    if data.get("ai_blocked_by"):
+        print(f"    🛑 תשובת ה-AI נחסמה ({data['ai_blocked_by']}) — נשלח תסריט")
+    elif data.get("ai_rewritten_after"):
+        print(f"    🔁 תשובת ה-AI נכתבה מחדש אחרי חסימה ({data['ai_rewritten_after']})")
     if data.get("ai_error"):
         print(f"    ⚠️  הבוט נפל חזרה לתסריט: {data['ai_error']}")
     elif not data.get("ai_used"):

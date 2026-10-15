@@ -769,6 +769,7 @@ async function handleStart(phone, session, opts = {}) {
 
   // If they opened with a real question rather than the trigger, answer it too
   if (opensWithQuestion) {
+    session.justGreeted = true;
     await new Promise(r => setTimeout(r, 800));
     await handleFreeText(phone, session, opts.firstMessage, { skipHistory: true });
   }
@@ -1120,6 +1121,7 @@ async function handleFreeText(phone, session, text, opts = {}) {
   if (aiWillCompose && !decision.forceFallback) {
     replyText = await brain.compose(analysis, p, session.history || [], decision.directive);
   }
+  const aiComposed = !!replyText;
   if (!replyText) {
     // Actions with purpose-built copy (escalation, asking for contact details,
     // closing, objection playbooks) must keep it. Only informational turns
@@ -1135,7 +1137,16 @@ async function handleFreeText(phone, session, text, opts = {}) {
       : (decision.fallbackText || fallbackFor(analysis, p, text, session, !!decision.appendContactAsk));
   }
 
+  if (!aiComposed) replyText = avoidTemplateRepeat(session, replyText);
   replyText = avoidRepetition(session, replyText);
+
+  // We already said hello in a separate message (handleStart). The model,
+  // seeing a first message, tends to greet again — "היי! כאן המשרד…" and then
+  // "היי רותם! 👋". One hello is enough.
+  if (session.justGreeted) {
+    replyText = stripLeadingGreeting(replyText);
+    session.justGreeted = false;
+  }
 
   // 5b. No conversation ends without one concrete call on the table.
   //     The AI composes freely, but on a terminal turn — the lead is leaving,
@@ -1712,6 +1723,45 @@ function askOf(text) {
  * equality, so a repeat two turns later, or a lightly reworded one, sailed
  * through. Now we look back over the recent bot turns and compare the ask.
  */
+/**
+ * A scripted template is never sent twice in one conversation.
+ *
+ * The 14 Oct trainer run: "הוגן לחלוטין — ואני לא רוצה לזרוק לך מספר באוויר…"
+ * four times across the run and twice to the same lead (מיכל), and
+ * "שווה להסתכל על זה ככה…" given to יוסי as the answer to "מי עובד במשרד?".
+ * avoidRepetition only compares with the LAST bot message, so a template that
+ * comes back three turns later slips through. A person who has already heard a
+ * paragraph and rejected it gets one short honest line instead.
+ */
+const SECOND_TIME = [
+  p => `לא אחזור על מה שכבר כתבתי. 🙂 בקצרה: את המספר נותן רק עו״ד פודים, אחרי שהוא רואה מה יש בתיק.\n\n` +
+       `אם לא נוח לך לדבר — *שלח כאן צילום של המסמכים שיש לך*, והוא יעבור עליהם ויענה לך כאן בכתב.`,
+  p => `אני מבין שזו לא התשובה שרצית, ואני לא רוצה להתיש אותך באותו הסבר. 🙏\n\n` +
+       `שתי דרכים בלי שיחה: לשלוח כאן צילומי מסמכים לעו״ד פודים, או להתקשר כשנוח לך — *${closing.OFFICE_PHONE}* · ${closing.HOURS}.`,
+  p => closing.callClose(p, { variant: 'departing_brief' }),
+];
+
+function avoidTemplateRepeat(session, text) {
+  if (!text) return text;
+  const earlier = (session.history || []).filter(m => m.role === 'assistant');
+  const heardBefore = earlier.some(m =>
+    normalise(m.text) === normalise(text) || similarity(m.text, text) >= 0.75);
+  if (!heardBefore) return text;
+  session.templateRepeats = (session.templateRepeats || 0) + 1;
+  const pick = SECOND_TIME[(session.templateRepeats - 1) % SECOND_TIME.length];
+  console.log(`♻️  Template already sent in this conversation — sending a short alternative`);
+  return pick(session.profile || {});
+}
+
+/** Drop an opening "היי…!" line when the conversation was greeted already. */
+function stripLeadingGreeting(text) {
+  if (!text) return text;
+  const stripped = String(text)
+    .replace(/^\s*(?:היי|הי|שלום|hi|hello)(?=[\s,!.])[^\n]{0,40}\n+/i, '')
+    .trim();
+  return stripped.length >= 20 ? stripped : text;
+}
+
 function avoidRepetition(session, text) {
   const history = session.history || [];
   const lastBot = [...history].reverse().find(m => m.role === 'assistant');
@@ -1729,9 +1779,14 @@ function avoidRepetition(session, text) {
       // the customer breathe instead of pressing the same button again.
       // askOf() returns the bolded core, so drop any line CONTAINING it —
       // filtering on equality silently kept the question in place.
-      const body = text.split(/\n+/)
+      let body = text.split(/\n+/)
         .filter(l => !l.includes(ask) && similarity(l, ask) < 0.75)
         .join('\n').trim();
+      // What is left may be only the tail of the ask — "ואם נוח לך יותר
+      // להתקשר בעצמך: 03-…". On 14 Oct דנה got exactly that line, alone, as a
+      // whole message. A sentence that starts with "ואם"/"או" continues
+      // something; without its first half it is not a reply.
+      if (body && body.split(/\n+/).every(l => /^\s*(?:ואם|או\s|אם\s+נוח)/.test(l))) body = '';
       session.repeatedAsk = (session.repeatedAsk || 0) + 1;
 
       // If the ask WAS the whole reply, removing it leaves nothing — and
@@ -1972,4 +2027,7 @@ module.exports = {
   ruleBasedAnalysis,
   maybeSaveLead,
   trimToWhatsApp,
+  stripLeadingGreeting,
+  avoidTemplateRepeat,
+  avoidRepetition,
 };

@@ -1981,6 +1981,73 @@ async function run() {
     check('the ad trigger still gets the full opening with its question', /\?/.test(trigReply));
   }
 
+  section('56. Trainer run 14 Oct — fixed 15 Oct');
+  {
+    const faq = require('../src/kb/faq');
+    const elig = faq.get ? faq.get('eligibility') : '';
+    check('the eligibility FAQ no longer puts Transylvania under Article 11',
+      !/סעיף 11[^\n]*טרנסילבניה/.test(elig), elig.slice(0, 200));
+    const allTemplates = Object.values(require('../src/sales/objections').OBJECTIONS || {})
+      .map(o => o.response).join('\n');
+    check('objection templates exist to check', allTemplates.length > 200);
+    check('no objection template claims "no generation limit" for everyone',
+      !/בלי מגבלת דורות|ללא מגבלת דורות/.test(allTemplates));
+    check('no objection template puts Transylvania/Maramureș/Banat in Article 11',
+      !/סעיף 11[^\n]*(?:טרנסילבניה|מרמורש|באנאט)/.test(allTemplates) &&
+      !/בסרביה, צפון בוקובינה, טרנסילבניה/.test(allTemplates));
+    check('no objection template says children are automatically eligible',
+      !/זכאים אוטומטית ברגע/.test(allTemplates));
+
+    const retrieve = require('../src/kb/retrieve');
+    const hits = retrieve.forIntent('ask_eligibility', 'סבתא שלי נולדה בקלוז׳ ב-1930 ועלתה ב-1960', []);
+    check('a Transylvanian birthplace no longer pulls the Article 11 passages to the top',
+      hits.length && !['article_11', 'bessarabia_group'].includes(hits[0].id), hits.map(h => h.id).join(','));
+    const hits11 = retrieve.forIntent('ask_eligibility', 'סבתא שלי נולדה בצ׳רנוביץ ב-1930', []);
+    check('while Czernowitz still does',
+      hits11.some(h => ['article_11', 'bessarabia_group', 'territory_matters'].includes(h.id)), hits11.map(h => h.id).join(','));
+
+    check('"בגורם של 3-4" is blocked as a price comparison',
+      brain.enforceGuardrails('זה יכול להשתנות בגורם של 3-4.') === null);
+    check('"בחצי מהמחיר האמיתי" is blocked',
+      brain.enforceGuardrails('אם אגיד טווח הוא יהיה בערך בחצי מהמחיר האמיתי.') === null);
+    check('"את בהחלט זכאית" is blocked as certainty',
+      brain.enforceGuardrails('כן, את בהחלט זכאית — סבתא שלך נולדה ברומניה.', {}) === null);
+    check('"הילדים אוטומטית זכאים דרך בעלך" is blocked',
+      brain.enforceGuardrails('הם אוטומטית זכאים לאזרחות רומנית דרך בעלך.', {}) === null);
+
+    // The orphan "ואם נוח לך יותר להתקשר בעצמך" line
+    const ask = closing.callClose({}, { variant: 'handoff' });
+    const session = { profile: {}, history: [
+      { role: 'assistant', text: ask }, { role: 'user', text: 'אני לא מתקשרת' },
+    ] };
+    const again = flows.avoidRepetition(session, ask);
+    check('removing a repeated phone ask never leaves only its "ואם…" tail',
+      !/^\s*(?:ואם|או\s)/.test(again.trim()), again);
+
+    // A template is never sent twice in one conversation
+    const tpl = objections.respond('need_price_first');
+    const s2 = { profile: {}, history: [
+      { role: 'assistant', text: tpl }, { role: 'user', text: 'נו אז כמה' },
+      { role: 'assistant', text: 'משהו אחר' }, { role: 'user', text: 'תן טווח' },
+    ] };
+    const second = flows.avoidTemplateRepeat(s2, tpl);
+    check('the same scripted template is not sent twice in one conversation',
+      second !== tpl && second.length > 20, second);
+
+    check('a duplicate hello is stripped',
+      flows.stripLeadingGreeting('היי רותם! 👋\n\nכן, נשמע שיש כיוון — חשוב לדעת את שנת העלייה.')
+        .startsWith('כן'));
+
+    // The documents path
+    const rung = closing.contactLadder({}, 1);
+    check('a lead who refuses to leave a number is offered to send documents here',
+      /צילום של המסמכים/.test(rung));
+    check('the prompt tells the bot about the documents path',
+      /צילומי מסמכים/.test(prompts.composeSystem({}, [], [])));
+    check('and about children born before the parent became a citizen',
+      /לפני\* שההורה קיבל אזרחות/.test(prompts.composeSystem({}, [], [])));
+  }
+
   section('41. The template catalog matches the code');
   {
     const fs = require('fs');

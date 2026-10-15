@@ -72,7 +72,8 @@ function callClose(profile = {}, opts = {}) {
   // We pitched a turn or two ago and the lead is now leaving. Repeating the
   // full pitch reads as not listening; leave the door open in one line.
   if (variant === 'departing_brief') {
-    return `מובן. 🙂 המספר כאן אם תרצה: *${OFFICE_PHONE}* · ${HOURS} — תבקש את עו״ד פודים.`;
+    return `מובן. 🙂 אם תרצה בהמשך — אפשר לשלוח כאן צילומי מסמכים לעו״ד פודים ולקבל תשובה בכתב, ` +
+           `או להתקשר: *${OFFICE_PHONE}* · ${HOURS}.`;
   }
 
   // "מעביר את הפרטים" is only true when there ARE details to pass. On 1 Sep
@@ -82,7 +83,8 @@ function callClose(profile = {}, opts = {}) {
   if ((variant === 'handoff' || variant === 'handoff_confirmed') && !hasPhone) {
     return `אשמח שעו״ד פודים עצמו יחזור אליך — לא נציג, הוא עצמו. ` +
            `*לאיזה מספר הוא יכול להתקשר?*\n\n` +
-           `ואם נוח לך יותר להתקשר בעצמך: *${OFFICE_PHONE}* · ${HOURS}`;
+           `לא נוח לך לדבר? אפשר לשלוח כאן צילומי מסמכים, והוא יענה לך בכתב. ` +
+           `או להתקשר בעצמך: *${OFFICE_PHONE}* · ${HOURS}`;
   }
 
   if (variant === 'handoff') {
@@ -296,10 +298,16 @@ function contactLadder(profile = {}, attempt = 0) {
   if (attempt <= 0) {
     return `כדי שעו״ד פודים יחזור אליך — *מה מספר הטלפון, ומתי נוח: ${when}?*`;
   }
+  // A lead who will not give a number and will not take a call still has a way
+  // forward: the documents. On 14 Oct מיכל asked for exactly this ("אני שולחת
+  // לכם תמונות של המסמכים בווטסאפ ואתם אומרים לי מה צריך?") and was sent to
+  // the office instead. Documents that arrive here are stored and the office
+  // is alerted with a download link (see flows.js, document_received).
   if (attempt === 1) {
     return `לגמרי בסדר, לא אבקש שוב. 🙂\n\n` +
-           `אז בוא נעשה את זה הפוך — *רק שם פרטי*, ואשלח לך סיכום קצר של מה שבדקנו כאן ` +
-           `כדי שיהיה לך במה להשוות.`;
+           `אפשר גם בלי טלפון ובלי שיחה: *שלח כאן צילום של המסמכים שיש לך* — תעודת לידה, ` +
+           `תעודת עלייה, כל מסמך ישן — ועו״ד פודים יעבור עליהם ויענה לך כאן בכתב מה יש ומה חסר.\n\n` +
+           `ואם תעדיף להתקשר בעצמך: *${OFFICE_PHONE}* · ${HOURS}.`;
   }
   if (attempt === 2) {
     return `אין בעיה. אם נוח לך יותר במייל — *info@pudimlaw.co.il*, ואשלח לשם את הסיכום ` +

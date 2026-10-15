@@ -200,6 +200,14 @@ function normalise(parsed, text, profile) {
   };
 }
 
+/** What to tell the model when its reply was blocked. */
+function retryNote(reason) {
+  return `ההודעה שכתבת לא נשלחה ללקוח, כי היא הפרה כלל: ${reason}.\n` +
+    'כתוב אותה מחדש בלי ההפרה הזו: בלי סכום, טווח או השוואת מחיר; בלי לקבוע זכאות או מסלול כעובדה ודאית; ' +
+    'בלי הבטחת תוצאה או זמן. ' +
+    'ועדיין ענה על מה שהלקוח שאל בפועל. כתוב רק את ההודעה עצמה.';
+}
+
 /**
  * Compose the customer-facing reply.
  * @returns {string|null} message text, or null to fall back to scripted copy
@@ -225,19 +233,8 @@ async function compose(analysis, profile, history = [], directive = null) {
       console.log(`📚 Retrieved: ${passages.map(p => `${p.id}(${p.score})`).join(', ')}`);
     }
 
-    countCall();
-    const res = await client.messages.create({
-      model: pickModel(analysis),
-      // WhatsApp replies should be short, and a small cap nudges the model
-      // that way — but 450 was cutting real answers off mid-sentence. קרן
-      // שרייבר was told "מכאן שלושה מסלולים:" and the list never arrived;
-      // אפרים got "יש לך דרך לברר את השנה הזו מהמסמ". Brevity is the prompt's
-      // job (see VOICE); the cap is only there to stop a runaway.
-      max_tokens: 700,
-      system: prompts.composeSystem(profile, history, passages),
-      messages: [{
-        role: 'user',
-        content:
+    const systemPrompt = prompts.composeSystem(profile, history, passages);
+    const userContent =
           `*ההודעה האחרונה של הלקוח:*\n"${lastUser}"\n\n` +
           `ניתוח פנימי (לשימושך בלבד — אסור לחשוף):\n` +
           `כוונה: ${analysis.intent} | רגש: ${analysis.emotion} | שלב: ${analysis.stage}\n` +
@@ -250,11 +247,22 @@ async function compose(analysis, profile, history = [], directive = null) {
           `(עיר, שנה, בן משפחה), לא במונחים כלליים.\n` +
           `3. רק אחר כך, ורק אם זה מתאים לרגע, הוסף שאלה אחת שמקדמת.\n\n` +
           `אם השאלה שלו לא קשורה למה שרצית לשאול — עזוב את מה שרצית. הלקוח קובע את הנושא.\n\n` +
-          `כתוב את ההודעה.`,
-      }],
+          `כתוב את ההודעה.`;
+
+    countCall();
+    const res = await client.messages.create({
+      model: pickModel(analysis),
+      // WhatsApp replies should be short, and a small cap nudges the model
+      // that way — but 450 was cutting real answers off mid-sentence. קרן
+      // שרייבר was told "מכאן שלושה מסלולים:" and the list never arrived;
+      // אפרים got "יש לך דרך לברר את השנה הזו מהמסמ". Brevity is the prompt's
+      // job (see VOICE); the cap is only there to stop a runaway.
+      max_tokens: 700,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userContent }],
     });
 
-    let text = (res.content?.[0]?.text || '').trim();
+    let text = (res.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim();
     if (!text) return null;
 
     // "מדבר: עוזר משרד פודים\n\n---\n\n…" — the model writing out its own role
@@ -287,12 +295,43 @@ async function compose(analysis, profile, history = [], directive = null) {
       blocked: false,
     };
 
-    const safe = enforceGuardrails(text, profile);
+    let safe = enforceGuardrails(text, profile);
     if (!safe) {
-      console.warn('🛑 AI reply blocked by guardrails — falling back to scripted copy');
-      lastCompose.blocked = true;
-      lastCompose.usedAI = false;
-      return null;
+      // One retry, told exactly what was wrong. On 14 Oct about one reply in
+      // four was a scripted template — repeated word for word, sometimes
+      // answering a question nobody asked — because a single blocked phrase
+      // threw away an otherwise good answer. Fixing the phrase is far better
+      // than replacing the whole reply with a leaflet.
+      const reason = lastBlockReason || 'guardrail';
+      console.warn(`🔁 AI reply blocked (${reason}) — asking for one rewrite`);
+      try {
+        countCall();
+        const res2 = await client.messages.create({
+          model: pickModel(analysis),
+          max_tokens: 700,
+          system: systemPrompt,
+          messages: [
+            { role: 'user', content: userContent },
+            { role: 'assistant', content: text },
+            { role: 'user', content: retryNote(reason) },
+          ],
+        });
+        let t2 = stripScaffold((res2.content || [])
+          .filter(b => b.type === 'text').map(b => b.text).join('').trim());
+        if (t2 && res2.stop_reason === 'max_tokens') t2 = trimToWholeSentence(t2);
+        if (t2) safe = enforceGuardrails(t2, profile);
+      } catch (e) {
+        console.warn('⚠️ rewrite attempt failed:', e.message);
+      }
+      if (!safe) {
+        console.warn('🛑 Rewrite still blocked — falling back to scripted copy');
+        lastCompose.blocked = true;
+        lastCompose.blockedBy = lastBlockReason || reason;
+        lastCompose.usedAI = false;
+        return null;
+      }
+      lastCompose.retried = true;
+      lastCompose.firstBlockedBy = reason;
     }
 
     // Remember which passages we just used so we don't repeat the same
@@ -412,6 +451,11 @@ const ROUTE_AS_FACT = [
  * כפולים ומשולשים" quantifies the fee just as effectively without one.
  */
 const COMPARATIVE_FEE = [
+  // "זה יכול להשתנות בגורם של 3-4" (רותם, 14 Oct) and "בערך בחצי מהמחיר
+  // האמיתי" (רון) both tell the lead how far apart prices are.
+  /בגורם\s+של\s*\d/,
+  /(?:חצי|שליש|רבע|כפליים)\s+(?:מה)?מחיר/,
+  /(?:בחצי|בשליש|בכפול)\s+מ(?:ה)?(?:מחיר|עלות|סכום)/,
   /כפול(?:ים)?\s+ומשולש/,
   /פי\s+(?:שניים|שלושה|\d+)\s+(?:יותר|פחות)?/,
   /(?:יקר|זול)\s+(?:בהרבה|פי|משמעותית)/,
@@ -509,7 +553,7 @@ const SHORT_TRACK_CLAIM = [
 ];
 /** Second person or possessive — the claim is about this lead, not the law. */
 const ABOUT_THIS_LEAD =
-  /(?:שלך|שלכם|במקרה שלך|בתיק שלך|אצלך|אתה|את\s|תצטרך|תצטרכי|לך זה|עבורך)/;
+  /(?:שלך|שלכם|במקרה שלך|בתיק שלך|אצלך|אתה|את\s|תצטרך|תצטרכי|לך זה|עבורך|בעלך|אשתך|ילדיך|הילדים שלכם|הילדים שלך)/;
 
 /**
  * Asserting Article 10 vs Article 11 without knowing WHERE the ancestor was
@@ -576,6 +620,11 @@ function mixesGenerationLimit(text) {
  * lead on 12 Sep whose grandfather's birthplace was not even established.
  */
 const CERTAIN_ELIGIBILITY = [
+  // "את בהחלט זכאית — סבתא עלתה בשנות ה-50" (רותם, 14 Oct). "בהחלט" and
+  // "אוטומטית" are certainty in other words.
+  /בהחלט\s+זכא/,
+  /זכא(?:י|ים|ית|יות)\s+(?:בהחלט|אוטומטית)/,
+  /אוטומטית\s+זכא/,
   /בוודאות\s+(?:זכא|יכול|מגיע|בתמונה)/,
   /זכא(?:י|ים|ית|יות)\s+בוודאות/,
   /בטוח\s+ש(?:את[הם]?|יש\s+לך|הילדים)/,
@@ -605,77 +654,76 @@ function trimToWholeSentence(text) {
   return t.length >= 40 ? t : '';
 }
 
+/**
+ * Why the last reply was blocked — so compose() can ask the model to fix that
+ * one thing instead of dropping straight to scripted copy, and so the trainer
+ * can see it.
+ */
+let lastBlockReason = null;
+function block(reason) {
+  console.warn(reason);
+  lastBlockReason = String(reason).replace(/^\S*\s*Guardrail:\s*/, '');
+  return null;
+}
+
 function enforceGuardrails(text, profile = null) {
+  lastBlockReason = null;
   if (profile && claimsRouteWithoutPlace(text, profile)) {
-    console.warn('🛑 Guardrail: route asserted without a birthplace — 10 vs 11 is undecided');
-    return null;
+    return block('🛑 Guardrail: route asserted without a birthplace — 10 vs 11 is undecided');
   }
   if (profile && claimsShortTrack(text, profile)) {
     const y = profile?.eligibility?.leftYear || 'לא ידועה';
-    console.warn(`🛑 Guardrail: short-track claim with leftYear=${y} — only 1950-52 / 1964-67 / 1988+ qualify`);
-    return null;
+    return block(`🛑 Guardrail: short-track claim with leftYear=${y} — only 1950-52 / 1964-67 / 1988+ qualify`);
   }
 
   for (const re of FEE_PATTERNS) {
     const m = text.match(re);
     if (m) {
       if (isAllowedFee(m[0])) continue;
-      console.warn(`🛑 Guardrail: fee quoted in AI reply → "${m[0]}"`);
-      return null;
+      return block(`🛑 Guardrail: fee quoted in AI reply → "${m[0]}"`);
     }
   }
   if (anchorsPrice(text)) {
-    console.warn('🛑 Guardrail: reply judges or repeats a price amount');
-    return null;
+    return block('🛑 Guardrail: reply judges or repeats a price amount');
   }
   if (COMPARATIVE_FEE.some(re => re.test(text))) {
-    console.warn('🛑 Guardrail: comparative fee claim');
-    return null;
+    return block('🛑 Guardrail: comparative fee claim');
   }
   for (const re of PROMISE_PATTERNS) {
     if (re.test(text)) {
-      console.warn('🛑 Guardrail: outcome promise in AI reply');
-      return null;
+      return block('🛑 Guardrail: outcome promise in AI reply');
     }
   }
   // Route attributes pinned to the wrong route.
   if (mixesGenerationLimit(text)) {
-    console.warn('🛑 Guardrail: "no generation limit" claimed outside הסדרת רישום');
-    return null;
+    return block('🛑 Guardrail: "no generation limit" claimed outside הסדרת רישום');
   }
   // Certainty the Romanian authorities have not given us.
   if (claimsCertainEligibility(text)) {
-    console.warn('🛑 Guardrail: eligibility asserted as certain for this lead');
-    return null;
+    return block('🛑 Guardrail: eligibility asserted as certain for this lead');
   }
   // A clock on a human we do not control.
   if (promisesResponseTime(text)) {
-    console.warn('🛑 Guardrail: promised a response time the office does not control');
-    return null;
+    return block('🛑 Guardrail: promised a response time the office does not control');
   }
   // A duration attached to this lead's own case — not a general corpus fact.
   if (CASE_SCOPED.test(text) && DURATION.test(text)) {
-    console.warn(`🛑 Guardrail: case-specific timeline → "${text.match(DURATION)[0]}"`);
-    return null;
+    return block(`🛑 Guardrail: case-specific timeline → "${text.match(DURATION)[0]}"`);
   }
   // A route presented as a determination rather than a strong likelihood.
   if (ROUTE_AS_FACT.some(re => re.test(text)) && !HEDGED.test(text)) {
-    console.warn('🛑 Guardrail: route stated as settled fact without hedging');
-    return null;
+    return block('🛑 Guardrail: route stated as settled fact without hedging');
   }
   // Revocation status stated as settled fact, with no hedge anywhere in the reply.
   if (STATUS_CERTAINTY.some(re => re.test(text)) && !HEDGED.test(text)) {
-    console.warn('🛑 Guardrail: revocation status asserted without hedging');
-    return null;
+    return block('🛑 Guardrail: revocation status asserted without hedging');
   }
   // Never leak internals
   if (/buyingIntent|nextBestAction|HIGH_INTENT|QUALIFICATION|ניקוד פנימי/i.test(text)) {
-    console.warn('🛑 Guardrail: internal state leaked in AI reply');
-    return null;
+    return block('🛑 Guardrail: internal state leaked in AI reply');
   }
   if (leaksScaffold(text)) {
-    console.warn('🛑 Guardrail: prompt scaffolding in AI reply');
-    return null;
+    return block('🛑 Guardrail: prompt scaffolding in AI reply');
   }
   return text;
 }

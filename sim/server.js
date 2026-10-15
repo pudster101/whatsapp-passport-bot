@@ -221,6 +221,10 @@ app.post('/api/bot', async (req, res) => {
       ms: Date.now() - started,
       ai_used: !!(ai && ai.usedAI),
       ai_error: ai && ai.error ? ai.error : null,
+      // Why a reply came from the script rather than the model — so the
+      // trainer can count templates instead of guessing from the wording.
+      ai_blocked_by: ai && ai.blocked ? (ai.blockedBy || 'guardrail') : null,
+      ai_rewritten_after: ai && ai.retried ? (ai.firstBlockedBy || 'guardrail') : null,
       profile: snapshot(phone),
     });
   } catch (err) {

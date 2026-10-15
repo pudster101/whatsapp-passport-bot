@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 import config
+import bot_connector
 from bot_connector import (
     reset_bot_session,
     resolve_mode,
@@ -114,6 +115,8 @@ def run_simulation(
                     "text": bot_reply,
                     "timestamp": _now(),
                     "latency_sec": round(time.time() - t0, 2),
+                    **({"meta": dict(bot_connector.last_reply_meta)}
+                       if bot_connector.last_reply_meta else {}),
                 }
             )
             if verbose:
@@ -146,6 +149,20 @@ def run_simulation(
 
     if not transcript["stop_reason"]:
         transcript["stop_reason"] = "max_turns"
+
+    # כמה מהתשובות הגיעו מה-AI וכמה מתסריט קבוע
+    metas = [m.get("meta") for m in transcript["messages"] if m["role"] == "bot" and m.get("meta")]
+    if metas:
+        transcript["reply_sources"] = {
+            "ai": sum(1 for m in metas if m.get("source") == "ai"),
+            "script": sum(1 for m in metas if m.get("source") == "script"),
+            "blocked": sum(1 for m in metas if m.get("blocked_by")),
+            "rewritten": sum(1 for m in metas if m.get("rewritten_after")),
+        }
+        if verbose:
+            rs = transcript["reply_sources"]
+            print(f"\nמקור התשובות: AI {rs['ai']} | תסריט {rs['script']} "
+                  f"(מתוכן {rs['blocked']} אחרי חסימה) | נכתבו מחדש {rs['rewritten']}")
     transcript["ended_at"] = _now()
 
     path = save_transcript(transcript, out_dir)

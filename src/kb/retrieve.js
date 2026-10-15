@@ -156,8 +156,13 @@ function retrieve(query, opts = {}) {
  * an age of 70 means the B1 exemption, "יקר" means the pricing conversation,
  * and a Romanian place name means the eligibility route.
  */
-const PLACES_ART11 = /צ׳רנוביץ|צרנוביץ|צ'רנוביץ|בוקובינה|בסרביה|כישינב|קישינב|מולדובה|אוקראינה|טרנסילבניה|קלוז|ברשוב|סיביו|מרמורש|סיגט|באנאט|טימישוארה/i;
-const PLACES_ART10 = /בוקרשט|יאשי|יאסי|גלאץ|קונסטנצה|בקאו|בראילה/i;
+// Only the territories that left Romania after WWII — Bessarabia, northern
+// Bukovina, Herța. Transylvania, Maramureș and Banat were part of Greater
+// Romania too, but they are IN Romania today, so they are Article 10 ground.
+// They used to sit in this list, which steered "סבתא מקלוז'" to the Article 11
+// passages and, on 14 Oct, put the wrong route in front of the model.
+const PLACES_ART11 = /צ׳רנוביץ|צרנוביץ|צ'רנוביץ|בוקובינה|בסרביה|כישינב|קישינב|מולדובה|אוקראינה|הרצה/i;
+const PLACES_ART10 = /בוקרשט|יאשי|יאסי|גלאץ|קונסטנצה|בקאו|בראילה|טרנסילבניה|קלוז|ברשוב|סיביו|מרמורש|סיגט|באנאט|טימישוארה/i;
 const MONEY_WORDS  = /יקר|זול|תקציב|כסף|לשלם|עלות|מחיר|שכר טרחה|כמה זה|כמה עולה/i;
 const AGE_RE       = /(?:בן|בת|גיל)\s*(\d{2})|(\d{2})\s*(?:שנה|שנים)/;
 
@@ -411,6 +416,17 @@ function forIntent(intent, query, exclude = []) {
     return false;
   });
 
+  // The topic filter is there to keep off-topic passages out — not to leave
+  // the model with nothing. "סבתא נולדה בצ׳רנוביץ — אני זכאי?" is an
+  // eligibility question, but the passage that answers it (bessarabia_group)
+  // is tagged by territory, not by the word "זכאות", so the filter emptied the
+  // list and the model improvised the route on its own (אלכס, 14 Oct). When
+  // nothing survives the filter, the strongest raw matches are still better
+  // than silence — but only for the route passages, and only on an
+  // eligibility question. Anywhere else, nothing beats something wrong.
+  if (!onTopic.length && intent === 'ask_eligibility') {
+    return hits.filter(h => /group|article|territor|bessarabia/.test(h.id)).slice(0, 2);
+  }
   return onTopic;
 }
 

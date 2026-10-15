@@ -94,6 +94,18 @@ def main() -> int:
     if resolve_mode() == "prompt" and not load_my_bot_prompt():
         print("\n שגיאה: knowledge/my_bot_prompt.md ריק. הדבק שם את הפרומפט של הבוט שלך.")
         return 1
+    # 14.10: סבב שלם רץ בטעות מול הפרומפט בלבד, כי הבוט לא היה דלוק, והתוצאה
+    # (23/100) לא אמרה דבר על הבוט עצמו. במצב אוטומטי — עוצרים ושואלים.
+    if resolve_mode() == "prompt" and args.bot == "auto" and not args.dry_run:
+        print(
+            "\n ⚠️  הבוט האמיתי לא עונה ב-http://localhost:3010.\n"
+            "   בלי הבוט, האימון ירוץ רק מול קובץ הפרומפט — בלי הקוד ובלי ההגנות —\n"
+            "   והציון לא ישקף את הבוט שלך.\n\n"
+            "   כדי לאמן את הבוט האמיתי: פתח חלון נוסף והרץ  npm run sim\n"
+            "   ואז הרץ שוב עם  --bot real\n"
+            "   כדי להריץ בכל זאת מול הפרומפט:  --bot prompt\n"
+        )
+        return 1
     if resolve_mode() == "mock" and args.bot == "auto":
         print(
             "\n שים לב: רץ מול בוט דמה כללי, לא מול הבוט שלך.\n"

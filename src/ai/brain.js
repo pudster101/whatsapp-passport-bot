@@ -171,6 +171,8 @@ function normalise(parsed, text, profile) {
     // and was told, definitively, that citizenship had been kept and no B1 was
     // needed — a claim that only holds for 1950-1952. It could have been 1953.
     leftYearApprox: !!entities.leftYearApprox,
+    // "בדיוק ב-1967", "לפי התעודה 1952" — the lead confirmed the year.
+    leftYearConfirmed: /(?:בדיוק|בוודאות|בטוח|בטוחה|לפי\s+ה?(?:תעודה|מסמך|דרכון))[^.?!\n]{0,20}(?:19)?\d{2}|(?:19)?\d{2}[^.?!\n]{0,12}(?:בדיוק|בוודאות)/.test(String(text || '')) || undefined,
     hasDocuments: entities.hasDocuments ?? null,
     b1Status: entities.b1Status || null,
   };
@@ -459,6 +461,14 @@ const ROUTE_AS_FACT = [
  * כפולים ומשולשים" quantifies the fee just as effectively without one.
  */
 const COMPARATIVE_FEE = [
+  // Positioning the lead inside the approved range (16 Oct, after the range
+  // went live): "מכניס אותך לצד הנמוך של הטווח", "נוטה לכיוון הנמוך יותר
+  // בטווח", "כנראה יותר לכיוון הנמוך". The range is the firm's, not theirs.
+  /(?:צד|כיוון|קצה|חלק|אזור|חצי)\s+ה?(?:נמוך|תחתון|זול|גבוה|עליון|יקר)/,
+  /נוטה\s+(?:יותר\s+)?(?:ל|אל)(?:כיוון|צד|קצה)/,
+  /(?:נוטה|נוטים|מטה|מטים)\s+(?:את\s+)?(?:ה)?(?:תיק|מחיר|עלות)[^.\n]{0,20}(?:לכיוון|לצד)/,
+  /(?:קרוב|קרובה|קרובים)\s+(?:יותר\s+)?ל-?\s?\d/,
+  /(?:משפיע|משפיעה|דוחף|מוריד|מעלה)\s+(?:את\s+ה(?:מחיר|עלות)\s+)?לכיוון/,
   // "התעריף יהיה הרבה יותר נמוך", "העלות אצלך נמוכה יותר ממה שחשבת" (16 Oct)
   /(?:עלות|העלות|מחיר|המחיר|תעריף|התעריף|שכר\s*(?:ה)?טרחה)[^.\n?]{0,25}(?:נמוך|נמוכה|גבוה|גבוהה|זול|זולה|יקר|יקרה)/,
   /ההפרש\s+בין[^.\n]{0,15}\d/,
@@ -606,7 +616,7 @@ function claimsShortTrack(text, profile) {
   // template. A claim that sits inside a conditional sentence is allowed.
   const sentences = String(text).split(/(?<=[.!?\n])/);
   const claimSentences = sentences.filter(s => SHORT_TRACK_CLAIM.some(re => re.test(s)));
-  const CONDITIONAL = /(?:^|[\s(—–-])(?:אם|במידה\s+ו|במקרה\s+ש|כאשר|כש\S)/;
+  const CONDITIONAL = /(?:^|[\s(—–-])(?:אם|במידה\s+ו|במקרה\s+ש(?!ל(?:ך|כם|ו|ה|נו)(?=$|[\s,.]))|כאשר|כש\S)/;
   if (claimSentences.length && claimSentences.every(s => CONDITIONAL.test(s))) return false;
 
   // An approximate year cannot support a claim that depends on hitting an exact
@@ -743,9 +753,67 @@ const APPROVED_RANGE = /8[,.]?000\s*(?:₪|ש"ח|ש״ח|שקלים|שקל)?\s*(?
 const RANGE_CAVEAT = /לגופו|תלוי\s+(?:ב)?(?:תיק|מקרה)|תלוי\s+בתיק|תלוי\s+במקרה/;
 const RANGE_REFERRAL = /פגיש|שיחת?\s+(?:ה)?ייעוץ|שיחה\s+קצרה|שיחה\s+עם/;
 
+/**
+ * What the fee covers, and whether it is per person or per file, is not in the
+ * knowledge base. On 16 Oct the model told מיכל "הטווח הזה הוא לתיק כולו, לא
+ * לנפש — גם למשפחה של 5 זה אותו סדר גודל" and listed everything "כלול".
+ */
+const FEE_SCOPE_CLAIM = [
+  /(?:לתיק\s+כולו|לא\s+לנפש|לכל\s+המשפחה|לכל\s+נפש|פר\s+נפש|לנפש)(?=$|[\s,.!?—-])/,
+  /(?:הכל|הכול)\s+כלול|כלול(?:ים|ה|ות)?\s+(?:בתיק|במחיר|בשכר|בעלות|מראש)|חלק\s+מהעלות\s+הכוללת|כבר\s+בפנים|תחת\s+קורת\s+גג\s+אחת/,
+  /(?:אין|בלי|ללא)\s+(?:הפתעות|תשלומים\s+נוספים|תוספות)/,
+];
+
+/**
+ * The bot cannot come back later. "אחזור אלייך כאן בוואטסאפ עם תשובה" and
+ * "אני עדיין מברר מול עו״ד פודים" (דנה, 16 Oct) promised work nobody does.
+ */
+const FALSE_FOLLOWUP = [
+  /אחזור\s+(?:אלי(?:ך|יך|כם)|אליכם|עם\s+תשובה)/,
+  /אני\s+(?:עדיין\s+)?(?:מברר|בודק|אבדוק|אברר)\s+(?:את\s+זה\s+)?(?:מול|עם)\s+(?:עו״ד|עו"ד|עורך)/,
+];
+
+/**
+ * The bot speaks of itself in the masculine. "אני לא יכולה", "מבינה, ואת
+ * צודקת" (רותם, מיכל — 16 Oct) broke the prompt's gender rule.
+ */
+const FEMININE_SELF = [
+  /אני\s+(?:לא\s+)?(?:יכולה|מבינה|יודעת|בטוחה|ממליצה|מציעה|חושבת|שמחה|רוצה|מעדיפה|צריכה)(?=$|[\s,.!?])/,
+  /(?:^|\n|[.!?]\s+)מבינה(?=[,\s.!])/,
+];
+
+/**
+ * Call times the bot invented: "היום אחה״צ או מחר בבוקר" — sent on a Friday,
+ * when the office is closed until Sunday.
+ */
+const INVENTED_CALL_TIME = /(היום|מחר)\s+(?:אחה״צ|אחה"צ|אחר\s+הצהריים|בבוקר|בערב|בצהריים)/;
+let clock = () => new Date();
+function _setClock(fn) { clock = fn || (() => new Date()); }
+/** "היום"/"מחר" is wrong only when it lands on Friday or Saturday (Israel time). */
+function invalidCallDay(text) {
+  const m = INVENTED_CALL_TIME.exec(text);
+  if (!m) return false;
+  const wd = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Jerusalem', weekday: 'short' }).format(clock());
+  const idx = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(wd);
+  const target = (idx + (m[1] === 'מחר' ? 1 : 0)) % 7;
+  return target === 5 || target === 6;
+}
+
 function enforceGuardrails(text, profile = null) {
   lastBlockReason = null;
   const original = text;
+  if (FEE_SCOPE_CLAIM.some(re => re.test(text))) {
+    return block('🛑 Guardrail: claimed what the fee covers or whether it is per person — only the lawyer says that');
+  }
+  if (FALSE_FOLLOWUP.some(re => re.test(text))) {
+    return block('🛑 Guardrail: promised to come back with an answer — the bot cannot; refer to the lawyer or the office phone');
+  }
+  if (FEMININE_SELF.some(re => re.test(text))) {
+    return block('🛑 Guardrail: spoke of itself in the feminine — the bot always uses the masculine about itself');
+  }
+  if (invalidCallDay(text)) {
+    return block('🛑 Guardrail: call time lands on Friday/Saturday — the office works Sun–Thu 09:00–18:00; ask when suits them');
+  }
   APPROVED_RANGE.lastIndex = 0;
   if (APPROVED_RANGE.test(text)) {
     APPROVED_RANGE.lastIndex = 0;
@@ -774,7 +842,7 @@ function enforceGuardrails(text, profile = null) {
       /(?:^|\D)(?:19(?:4[1-9]|[5-8]\d|9[01]))(?!\d)/.test(text)) {
     return block('🛑 Guardrail: said "born in Romania" for a birth in Bessarabia/Bukovina after 1940 — that was the Soviet Union');
   }
-  if (/(?:^|\n)\s*כן,?\s*בהחלט/.test(text) && /(?:זכא|סעיף|מסלול|נחשב)/.test(text)) {
+  if (/(?:^|\n)\s*(?:כן[,!]?\s*(?:זה\s+|את\s+|אתה\s+)?|בחזקה\s+)(?:בהחלט|כן\b)|בהחלט\s+(?:נחשב|זכאי|זכאית|פותח)/.test(text) && /(?:זכא|סעיף|מסלול|נחשב|פותח)/.test(text)) {
     return block('🛑 Guardrail: "כן, בהחלט" as an eligibility answer — certainty the authorities have not given');
   }
   if (profile && claimsRouteForSovietBirth(text, profile)) {
@@ -903,6 +971,7 @@ async function updateSummary(profile, history) {
 }
 
 module.exports = {
+  _setClock,
   init,
   isAvailable,
   analyse,

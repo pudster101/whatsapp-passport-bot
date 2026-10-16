@@ -28,6 +28,13 @@ const SOURCES = {
 };
 
 const PASSAGES = [
+  {
+    id: 'anc_what',
+    topics: ['ANC', 'מה זה ANC', 'הרשות הלאומית לאזרחות', 'הרשות לאזרחות', 'רשות האזרחות'],
+    src: 'D',
+    text: `*ANC* — הרשות הלאומית לאזרחות של רומניה (Autoritatea Națională pentru Cetățenie), בבוקרשט.
+זו הרשות שבודקת את בקשות האזרחות ומחליטה עליהן. רוב זמן ההמתנה בתיק הוא התור שם — לא עבודה שוטפת של הלקוח.`,
+  },
   // ═══ Investments in Romania — the firm handles these; refer to the lawyer ═══
   {
     id: 'romania_investments',

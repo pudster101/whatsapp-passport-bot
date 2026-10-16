@@ -568,8 +568,13 @@ async function run() {
       brain.enforceGuardrails('אני מעביר את זה עכשיו ומיד נחזור אליך') === null);
     check('blocks "תוך שעה"',
       brain.enforceGuardrails('תקבל תשובה תוך שעה') === null);
+    brain._setClock(() => new Date('2026-10-13T10:00:00+03:00'));   // a Tuesday
     check('allows offering time slots as a question',
       brain.enforceGuardrails('מתי נוח שעו״ד פודים יחזור אליך — היום אחר הצהריים או מחר בבוקר?') !== null);
+    brain._setClock(() => new Date('2026-10-16T10:00:00+03:00'));   // a Friday
+    check('but not "היום/מחר" on a Friday, when the office is closed',
+      brain.enforceGuardrails('מתי נוח שעו״ד פודים יחזור אליך — היום אחר הצהריים או מחר בבוקר?') === null);
+    brain._setClock(null);
     check('allows the length of the consultation itself',
       brain.enforceGuardrails('שיחת הייעוץ אורכת כ-15 דקות, ללא עלות') !== null);
     check('allows the office number without a clock',
@@ -2210,6 +2215,57 @@ async function run() {
 
     const flowsSrc = require('fs').readFileSync(path.join(__dirname, '..', 'src', 'flows.js'), 'utf8');
     check('no meeting pitch under a reply that already said goodbye', /alreadySignedOff/.test(flowsSrc));
+  }
+
+  section('60. Trainer run 16 Oct 16:59 — fixed 16 Oct');
+  {
+    const ok = { priceRangeAllowed: true };
+    for (const [label, t] of [
+      ['"מכניס אותך לצד הנמוך של הטווח"', 'זה נשמע כמו תיק יחסית פשוט, מה שבדרך כלל מכניס אותך לצד הנמוך של הטווח שנתתי.'],
+      ['"נוטה לכיוון הנמוך יותר בטווח"', 'פחות בני משפחה בתיק בהחלט נוטה לכיוון הנמוך יותר בטווח.'],
+      ['"כנראה יותר לכיוון הנמוך"', 'במקרה שלך, כנראה יותר לכיוון הנמוך.'],
+      ['"הטווח הזה הוא לתיק כולו, לא לנפש"', 'הטווח הזה הוא *לתיק כולו*, לא לנפש.'],
+      ['"התיק אצלנו כולל את הכל… כבר בפנים"', 'זה כבר בפנים, אין הפתעות באמצע הדרך.'],
+      ['"אחזור אלייך כאן בוואטסאפ"', 'אני מעביר את השאלה לעו״ד פודים ואחזור אלייך כאן בוואטסאפ עם תשובה.'],
+      ['"אני עדיין מברר מול עו״ד פודים"', 'אני עדיין מברר מול עו״ד פודים את שאלת ההחזר.'],
+      ['"אני לא יכולה לחלוק"', 'אני לא יכולה לחלוק פרטים של לקוחות אחרים.'],
+      ['"כן, זה בהחלט נחשב!"', 'כן, זה בהחלט נחשב! זה פותח לך זכאות למסלול.'],
+    ]) check(`blocked: ${label}`, brain.enforceGuardrails(t, ok) === null);
+
+    check('"במקרה שלך" is not a conditional that excuses a short-track claim',
+      brain.enforceGuardrails('במקרה שלך של הסבתא, אנחנו כנראה מדברים על *הסדרת רישום* — אין צורך בשבועה.',
+        { eligibility: { birthPlace: 'בוקרשט', leftYear: 1952, leftYearApprox: true } }) === null);
+
+    const merged = leadProfile.merge({ eligibility: { leftYear: '1967', leftYearApprox: true } },
+                                     { eligibility: { leftYear: '1967', leftYearApprox: false } });
+    check('"ב-67\' בערך" stays approximate when restated', merged.eligibility.leftYearApprox === true);
+    const confirmed = leadProfile.merge({ eligibility: { leftYear: '1967', leftYearApprox: true } },
+                                     { eligibility: { leftYear: '1967', leftYearApprox: false, leftYearConfirmed: true } });
+    check('…until the lead confirms the exact year', confirmed.eligibility.leftYearApprox === false);
+
+    // A single "כמה זה בערך?" twice is asking, not insisting
+    const avi = newPhone();
+    await say(avi, 'היי, כמה עולה להוציא דרכון רומני?');
+    const a2 = await say(avi, 'סבא מצד אמא. כמה זה עולה בערך אם יש סבא?');
+    check('a plain second "כמה זה עולה בערך" does not open the range', !/8,000/.test(a2), a2.slice(0, 160));
+    const a3 = await say(avi, 'אז כמה זה יצא לי במקרה שלי?');
+    check('the third ask does', /8,000 ל-14,000/.test(a3), a3.slice(0, 160));
+    const a4 = await say(avi, 'אתה לא יכול להגיד לי אם זה קרוב ל-8 או קרוב ל-12?');
+    check('asked again after the range: reminder, not retreat', /כמו שכתבתי/.test(a4) && /8,000/.test(a4), a4.slice(0, 160));
+
+    // Number + questions in one message: the questions are answered
+    const ron = newPhone();
+    await say(ron, 'שלום, סבא שלי נולד ברומניה ועזב ב-1962, יש לי תעודת לידה מקורית. כמה זה עולה?');
+    const r2 = await say(ron, 'באיזה טווח מחירים אנחנו מדברים? ומה זה ANC? אני רון לוי, הנייד שלי 050-7734291');
+    check('a message with the number and questions is not answered with "רשמתי" alone',
+      !/^🎉 מצוין/.test(r2) && /8,000|ANC|הרשות/.test(r2), r2.slice(0, 200));
+    const r3 = await say(ron, 'מה זה ANC שהזכרת?');
+    check('and a later question still gets an answer, not "סגור 👍"', /הרשות הלאומית לאזרחות/.test(r3), r3.slice(0, 160));
+
+    const alex = newPhone();
+    await say(alex, 'אמא שלי נולדה בבוקרשט ועזבה ב-1975');
+    const x = await say(alex, 'כמה זה בסוף עולה בסך הכל?');
+    check('"כמה זה בסוף עולה בסך הכל" is not answered with the B1 fee', !/B1/.test(x), x.slice(0, 160));
   }
 
   section('41. The template catalog matches the code');

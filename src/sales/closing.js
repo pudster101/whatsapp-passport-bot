@@ -96,6 +96,13 @@ function priceRangeAnswer(profile = {}) {
          `כדי לקבל מחיר נכון ומותאם אישית — פגישה עם עו״ד פודים או שיחת ייעוץ קצרה, ללא עלות וללא התחייבות.`;
 }
 
+/** After the range was given: remind, don't retreat to "אי אפשר לתת מספר". */
+function priceRangeReminder(profile = {}) {
+  return `כמו שכתבתי — הטווח הכללי הוא *8,000 ל-14,000 ₪*, וכל מקרה נבחן לגופו. ` +
+         `לצמצם אותו או לומר איפה בתוכו המקרה שלך אני לא יכול — זה תלוי במסמכים עצמם, ` +
+         `ואת המחיר המדויק נותן עו״ד פודים אחרי שהוא רואה אותם, בפגישה או בשיחת ייעוץ קצרה, ללא עלות.`;
+}
+
 function callClose(profile = {}, opts = {}) {
   const hasPhone = !!(profile.clientPhone);
   const name = profile.name ? `${profile.name}, ` : '';
@@ -468,6 +475,7 @@ function signalsEnding(text) {
 
 module.exports = {
   priceRangeAnswer,
+  priceRangeReminder,
   SLOTS_TOKEN,
   meetingClose,
   OFFICE_PHONE,

@@ -83,10 +83,19 @@ function merge(profile, updates = {}) {
     if (value === null || value === undefined || value === '') continue;
 
     if (key === 'eligibility' && typeof value === 'object') {
+      const wasApprox = !!(out.eligibility || {}).leftYearApprox;
+      const prevYear = (out.eligibility || {}).leftYear;
       out.eligibility = { ...out.eligibility };
       for (const [k, v] of Object.entries(value)) {
+        if (k === 'leftYearConfirmed') continue;
         if (v !== null && v !== undefined && v !== '') out.eligibility[k] = v;
       }
+      // "ב-67' בערך" and later "סבא שיצא ב-67'" is still an approximate 1967.
+      // On 16 Oct the restatement cleared the flag and שירה was told her case
+      // was "בדרך כלל הסדרת רישום" — 1968 would be a different route entirely.
+      const sameYear = !value.leftYear || String(value.leftYear) === String(prevYear);
+      if (wasApprox && sameYear && !value.leftYearConfirmed) out.eligibility.leftYearApprox = true;
+      if (value.leftYearConfirmed) out.eligibility.leftYearApprox = false;
       continue;
     }
 

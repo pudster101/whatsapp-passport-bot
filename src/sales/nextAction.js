@@ -85,7 +85,7 @@ function decide({ analysis, profile, text, recentClose = false }) {
   // "we just closed, don't nag" rule silenced the ask at the warmest moment.
   const noNumber = closing.needsPhoneAsk(profile);
   const PRICE_OBJECTIONS = ['need_price_first', 'price_too_high', 'cheaper_competitor'];
-  const PRICE_ASK = /(?:כמה\s+(?:זה\s+|זה\s+בערך\s+|בערך\s+)?(?:עולה|יוצא|יעלה)|טווח|מחיר|עלות|סדר\s+גודל|שכר\s*טרחה)/;
+  const PRICE_ASK = /(?:כמה\s+(?:זה\s+|זה\s+בערך\s+|בערך\s+|זה\s+בסוף\s+)?(?:עולה|יוצא|יצא|ייצא|יעלה)|טווח|מחיר|עלות|סדר\s+גודל|שכר\s*טרחה)/;
 
   // Is this case ready for the office meeting? Then every close below points
   // there, and a phone call is the fallback — not the other way round.
@@ -182,6 +182,26 @@ function decide({ analysis, profile, text, recentClose = false }) {
         : `${closing.priceRangeAnswer(profile)}\n\n${closing.withPhoneAsk(closing.callClose(profile, { variant: 'ask_phone', phoneOnly: true }), profile)}`,
       offerMeeting: meetingReady,
       priceRange: true,
+      escalate: false,
+    };
+  }
+
+  // 1e. The range was already given and they ask again ("קרוב ל-8 או ל-12?").
+  //     Repeating "אי אפשר לתת מספר" after a range reads as a retreat (רון,
+  //     16 Oct). Remind them of the range, say plainly it cannot be narrowed.
+  const positionAsk = /קרוב\s+ל|באיזה\s+(?:צד|קצה)|איזה\s+קצה|איפה\s+(?:אני|זה|אנחנו)|לאיזה\s+(?:צד|כיוון)|(?:^|\s)ל?-?\d{1,2}(?:\s*אלף)?\s*(?:או|\?)/.test(text);
+  if (profile.priceRangeGiven && (askingPriceAny || positionAsk)) {
+    return {
+      action: ACTIONS.HANDLE_OBJECTION,
+      reason: 'asks price again after the range',
+      directive:
+        'כבר נתת ללקוח את טווח המשרד (8,000 ל-14,000 ₪). הזכר אותו במשפט אחד, אמור בכנות שאינך יכול ' +
+        'לצמצם אותו או לומר איפה בטווח המקרה שלו נמצא, ושאת המחיר המדויק נותן עו״ד פודים בפגישה או בשיחת ייעוץ. ' +
+        'אל תאמר "צד נמוך", "נוטה", "קרוב ל-" או כל מיקום בטווח. ענה גם על כל שאלה אחרת בהודעה.' + PHONE_RIDER,
+      fallbackText: meetingReady
+        ? `${closing.priceRangeReminder(profile)}\n\n${closing.SLOTS_TOKEN}`
+        : closing.withPhoneAsk(closing.priceRangeReminder(profile), profile),
+      offerMeeting: meetingReady,
       escalate: false,
     };
   }
@@ -286,7 +306,10 @@ function decide({ analysis, profile, text, recentClose = false }) {
   //    to lose a serious prospect — it is exactly what a bad salesperson does.
   //    When intent is high we still push, but as an ADDITION to the answer,
   //    never as a replacement for it.
-  const faqKey = faq.BY_INTENT[intent];
+  // "כמה זה בסוף עולה בסך הכל?" was answered with the B1 exam fee (אלכס,
+  // 16 Oct). A question about the price of the case gets the price answer.
+  const priceOfCase = PRICE_ASK.test(text) && !/B1|בחינ|אפוסטיל|אגר|קונסוליה/i.test(text);
+  const faqKey = priceOfCase ? 'cost' : faq.BY_INTENT[intent];
   if (faqKey) {
     const isQualified = leadProfile.isQualified(profile);
     const wantsContact = !leadProfile.hasContactDetails(profile)
@@ -538,7 +561,7 @@ function decide({ analysis, profile, text, recentClose = false }) {
   };
 }
 
-const PRICE_ASK_RE = /(?:כמה\s+(?:זה\s+|זה\s+בערך\s+|בערך\s+)?(?:עולה|יוצא|יעלה)|טווח|מחיר|עלות|סדר\s+גודל|שכר\s*טרחה)/;
+const PRICE_ASK_RE = /(?:כמה\s+(?:זה\s+|זה\s+בערך\s+|בערך\s+|זה\s+בסוף\s+)?(?:עולה|יוצא|יצא|ייצא|יעלה)|טווח|מחיר|עלות|סדר\s+גודל|שכר\s*טרחה)/;
 
 module.exports = {
   PRICE_ASK_RE,

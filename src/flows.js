@@ -1041,6 +1041,20 @@ async function handleFreeText(phone, session, text, opts = {}) {
     .join(' ');
   const timeAgreed = closing.alreadyScheduled(historyText) || closing.alreadyScheduled(text);
 
+  // A message that carries the number AND questions ("באיזה טווח מחירים? ומה
+  // זה ANC? הנייד שלי 050-…") was answered with "רשמתי" and slots — and every
+  // later question got "סגור 👍 נדבר אז" (רון, 16 Oct). Questions come first.
+  const asksSomething = /\?|(?:^|\s)(?:כמה|מה\s+זה|למה|איך|לא\s+ענית|אתה\s+לא\s+עונה|תסביר)(?=$|[\s,.])/.test(text)
+    || nextAction.PRICE_ASK_RE.test(text);
+
+  if (!hadContact && leadProfile.hasContactDetails(p) && asksSomething
+      && !(['requested', 'confirmed'].includes((p.meeting || {}).status))) {
+    p.stage = stages.shouldAdvance(p.stage, 'CONVERSION');
+    session.state = 'COMPLETE';
+    storage.logEvent(phone, 'contact_captured_with_question', {});
+    await maybeSaveLead(phone, session);
+    // fall through to the normal pipeline: answer, then the meeting offer
+  } else
   if (!hadContact && leadProfile.hasContactDetails(p)) {
     p.stage = stages.shouldAdvance(p.stage, 'CONVERSION');
     session.state = 'COMPLETE';
@@ -1158,7 +1172,7 @@ async function handleFreeText(phone, session, text, opts = {}) {
   //     only correct reply is a short acknowledgement. On 5 Sep the bot instead
   //     re-sent the consultation blurb twice and then offered an email address,
   //     after the lead had already booked Sunday morning.
-  if (leadProfile.hasContactDetails(p) && timeAgreed) {
+  if (leadProfile.hasContactDetails(p) && timeAgreed && !asksSomething) {
     const acks = [
       'מצוין, רשמתי. 👍 נדבר אז.',
       'סגור. 👍 עו״ד פודים יחזור אליך במועד שסיכמנו.',
@@ -1178,7 +1192,11 @@ async function handleFreeText(phone, session, text, opts = {}) {
   if (nextAction.PRICE_ASK_RE.test(text) || objections.detect(text).some(o =>
         ['need_price_first', 'price_too_high', 'cheaper_competitor'].includes(o))) {
     p.priceAsks = (p.priceAsks || 0) + 1;
-    if (p.priceAsks >= 2) p.priceRangeAllowed = true;
+    // The owner's words: "למי שמאוד מתעקש". On 16 Oct the range went out on
+    // the second message of the conversation (אבי, מיכל) — that is asking,
+    // not insisting. Third ask, or a second one that demands a figure.
+    const demandsFigure = /טווח|סדר\s*גודל|מספר|לא\s+ענית|לא\s+עונה|תגיד\s+לי\s+כמה|פשוט\s+רוצה\s+לדעת/.test(text);
+    if (p.priceAsks >= 3 || (p.priceAsks >= 2 && demandsFigure)) p.priceRangeAllowed = true;
   }
 
   const decision = nextAction.decide({

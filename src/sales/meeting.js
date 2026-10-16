@@ -145,10 +145,14 @@ const AGREES = /(כן|בסדר|אשמח|מעוניין|מעוניינת|מתאי
 const DECLINES_MEETING = /(לא נוח לי להגיע|לא רוצה להגיע|לא מתאים לי להגיע|אין לי זמן להגיע|עדיף(?: לי)? טלפון|רק טלפון|בטלפון עדיף|לא צריך פגישה)/;
 const CANNOT_COME = /(בחו״ל|בחו"ל|בחול\b|לא בארץ|מחוץ לארץ|ברומניה|באירופה|רחוק מדי|גר רחוק|גרה רחוק|בצפון|בדרום|באילת|קשה לי להגיע|אין לי איך להגיע|לא יכול להגיע|לא יכולה להגיע|מרותק|מאושפז|זום|וידאו)/;
 
+// Naming a day or an evening hour is a yes too: "יום שני" in answer to
+// "רוצה שנקבע?" was read as small talk and the meeting was dropped.
+const NAMES_A_TIME = /(יום\s*(ראשון|שני|שלישי|רביעי|חמישי)|ב?ראשון|בשני|בשלישי|ברביעי|בחמישי|מחר|בשעה\s*1[78]|\b1[78](?::00)?\b|בערב)/;
+
 function signalsMeetingInterest(text) {
   const t = String(text || '');
   if (DECLINES_MEETING.test(t)) return false;
-  return AGREES.test(t);
+  return AGREES.test(t) || NAMES_A_TIME.test(t);
 }
 
 function signalsMeetingRefusal(text) {
@@ -331,7 +335,18 @@ function isReadyForMeeting(profile = {}) {
   return true;
 }
 
+/**
+ * Did this reply put a meeting on the table? Used to record the offer when the
+ * model writes it in its own words, so a "כן" on the next turn gets real slots
+ * instead of falling back to a phone call.
+ */
+function mentionsMeetingOffer(text) {
+  const t = String(text || '');
+  return /פגיש/.test(t) && /(משרד|זום|וידאו)/.test(t) && /\?/.test(t);
+}
+
 module.exports = {
+  mentionsMeetingOffer,
   OFFICE, MAPS_URL, WAZE_URL,
   MEETING_DAYS, MEETING_HOURS, MEETING_MINUTES, WHAT_TO_BRING,
   nextSlots, takenSlots, slotLabel,

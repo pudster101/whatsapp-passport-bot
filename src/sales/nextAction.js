@@ -84,6 +84,19 @@ function decide({ analysis, profile, text, recentClose = false }) {
   // mid-September picked a time and were never asked for a number, because the
   // "we just closed, don't nag" rule silenced the ask at the warmest moment.
   const noNumber = closing.needsPhoneAsk(profile);
+  // Is this case ready for the office meeting? Then every close below points
+  // there, and a phone call is the fallback — not the other way round.
+  const meetingReady = meeting.isReadyForMeeting(profile)
+    && ((profile.meeting || {}).closeOffers || 0) < 2;
+  const GOAL =
+    meetingReady
+      ? 'הצע *פגישה של 45 דקות במשרד עם עו״ד פודים* (אשכנזי 21, תל אביב), ללא עלות וללא התחייבות; ' +
+        'מי שלא יכול להגיע — אותה פגישה בזום; ורק מי שלא רוצה פגישה בכלל — שיחת טלפון. ' +
+        'אל תציין ימים או שעות בעצמך — המערכת מוסיפה את המועדים הפנויים האמיתיים.'
+      : 'הצע שיחה קצרה עם עו״ד פודים עצמו — ללא עלות וללא התחייבות — עם שתי אפשרויות זמן קונקרטיות.';
+
+  const PRICE_OBJECTIONS = ['need_price_first', 'price_too_high', 'cheaper_competitor'];
+
   const PHONE_RIDER = noNumber
     ? ' ⚠️ אין מספר טלפון בתיק. סיים את ההודעה בבקשה מפורשת למספר טלפון — ' +
       'גם אם כבר סוכם מועד, וגם אם ביקשת בעבר. מועד בלי מספר אינו פגישה.'
@@ -180,7 +193,17 @@ function decide({ analysis, profile, text, recentClose = false }) {
           `אל תציע לתאם שיחה בתשובה הזו — הוא עדיין באמצע בירור.`
         : `הלקוח העלה התנגדות מסוג "${objections.label(primary)}". ` +
           `הכר בה, הבן את השורש, וענה ספציפית. אל תתווכח ואל תלחץ.`,
-      fallbackText: objections.respond(primary),
+      ...((PRICE_OBJECTIONS.includes(primary) && meetingReady && !recentClose) ? {
+        directiveSuffix:
+          ' בסוף ההודעה המערכת תוסיף שתי אפשרויות אמיתיות לפגישה במשרד (שם נותנים את המספר) — ' +
+          'אל תוסיף הצעה, מועד או שאלת סגירה משלך.',
+      } : {}),
+      fallbackText: (PRICE_OBJECTIONS.includes(primary) && meetingReady && !recentClose)
+        ? `${closing.stripTrailingAsk(objections.respond(primary))}\n\n${closing.meetingClose(profile)}`
+        : objections.respond(primary),
+      // "How much?" from a lead whose case is clear is the natural moment for
+      // the meeting: that is exactly where the number is given.
+      offerMeeting: PRICE_OBJECTIONS.includes(primary) && meetingReady && !recentClose,
       escalate: false,
       closeToCall: true,
     };
@@ -211,8 +234,7 @@ function decide({ analysis, profile, text, recentClose = false }) {
       reason: 'customer signalled the conversation is ending',
       directive:
         'הלקוח מסיים את השיחה. אל תילחם ואל תחזור על מה שכבר נאמר. ' +
-        'הכר בזה במשפט אחד, ואז שים על השולחן שיחה קצרה עם עו״ד פודים עצמו — ' +
-        'ללא עלות וללא התחייבות — עם שתי אפשרויות זמן קונקרטיות, ' +
+        'הכר בזה במשפט אחד, ואז שים על השולחן צעד אחד קונקרטי: ' + GOAL + ' ' +
         `ומספר המשרד ${closing.OFFICE_PHONE} כדי שהשליטה תישאר אצלו.` + PHONE_RIDER,
       // Already pitched a turn or two ago? Then this is a goodbye, not a
       // second pitch — leave the number and stop talking.
@@ -221,6 +243,7 @@ function decide({ analysis, profile, text, recentClose = false }) {
         seed: profile.messageCount || 0,
       }), profile),
       appendContactAsk: noNumber,
+      offerMeeting: meetingReady && !recentClose,
       escalate: false,
       closeToCall: true,
     };
@@ -280,7 +303,7 @@ function decide({ analysis, profile, text, recentClose = false }) {
             'קבל את זה במשפט אחד, והצע במקום זה שיחה קצרה עם עו״ד פודים עם שתי ' +
             'אפשרויות זמן קונקרטיות.' + PHONE_RIDER,
           fallbackText: closing.withPhoneAsk(
-            closing.callClose(profile, { variant: 'ask_time', seed: profile.messageCount || 0 }),
+            closing.callClose(profile, { variant: 'ask_time', seed: profile.messageCount || 0, phoneOnly: true }),
             profile),
           meetingDeclined: true,
           escalate: false,
@@ -352,7 +375,7 @@ function decide({ analysis, profile, text, recentClose = false }) {
           'עוברים יחד על המסמכים שיש, ועו״ד פודים אומר בדיוק מה חסר ומאיפה מאתרים אותו. ' +
           'ציין שזה ללא עלות וללא התחייבות. אל תנקוב בסכום, אל תבטיח תוצאה, ' +
           'ואל תיתן כתובת או מועד שלא נמסרו לך.' + PHONE_RIDER,
-        fallbackText: meeting.offerText(profile, mode),
+        fallbackText: closing.meetingClose({ ...profile, meeting: { ...(profile.meeting || {}), mode } }),
         offerMeeting: true,
         meetingMode: mode,
         escalate: false,
@@ -365,8 +388,8 @@ function decide({ analysis, profile, text, recentClose = false }) {
     return {
       action: ACTIONS.CLOSE,
       reason: 'customer signalled readiness',
-      directive: 'הלקוח מוכן. הסבר בשורה מה כוללת שיחת הייעוץ, ואז סגור מועד — ' +
-                 'שתי אפשרויות זמן קונקרטיות, לא "בהקדם".' + PHONE_RIDER,
+      directive: 'הלקוח מוכן. ' + GOAL + ' לא "בהקדם".' + PHONE_RIDER,
+      offerMeeting: meetingReady,
       fallbackText: closing.withPhoneAsk(
         `${faq.get('consultation')}\n\n` + closing.callClose(profile), profile),
       appendContactAsk: noNumber,

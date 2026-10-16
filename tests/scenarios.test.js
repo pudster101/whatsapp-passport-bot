@@ -1203,8 +1203,12 @@ async function run() {
     check('a clear route triggers the meeting offer',
       /פגישה/.test(offer) && /אשכנזי 21/.test(offer), offer.slice(0, 80));
     check('the offer says it costs nothing', /ללא עלות/.test(offer));
+    // Since 16 Oct the offer carries two real evenings straight away instead of
+    // "רוצה שנקבע?" followed by a second round-trip.
     check('and the meeting is recorded as offered',
-      profileOf(phone)?.meeting?.status === 'offered');
+      ['offered', 'slots_proposed'].includes(profileOf(phone)?.meeting?.status));
+    check('the offer already carries two real evenings',
+      /בשעה 1[78]:00/.test(offer), offer.slice(0, 200));
 
     // The year still gets asked for — the offer does not swallow qualification.
     await say(phone, 'עלתה ב-1961');
@@ -2046,6 +2050,66 @@ async function run() {
       /צילומי מסמכים/.test(prompts.composeSystem({}, [], [])));
     check('and about children born before the parent became a citizen',
       /לפני\* שההורה קיבל אזרחות/.test(prompts.composeSystem({}, [], [])));
+  }
+
+  section('57. Trainer run 15 Oct + meeting-first close — fixed 16 Oct');
+  {
+    check('"15-20K" is blocked as a price', brain.enforceGuardrails('אם זה 1989 — מסלול אחד, כ-15-20K עבור ארבעתכם.') === null);
+    check('"15 אלף" is blocked as a price', brain.enforceGuardrails('זה בערך 15 אלף לכל המשפחה.') === null);
+    check('"בקצה הזול יחסית" is blocked', brain.enforceGuardrails('אתה בקצה הזול יחסית של הטווחים במשרד.') === null);
+    check('"ויקר יותר" is blocked', brain.enforceGuardrails('זה תהליך מורכב ויקר יותר מהמסלול הפשוט.') === null);
+    check('the bot can never claim to be human',
+      brain.enforceGuardrails('אני בן אדם, לא בוט — ואני מבין את התסכול שלך.') === null);
+    check('but it may say it is the office\'s digital assistant',
+      brain.enforceGuardrails('אני עוזר דיגיטלי של המשרד, ועו״ד פודים יחזור אליך.') !== null);
+    check('a price in writing is never promised',
+      brain.enforceGuardrails('עו״ד פודים יגיד לך מספר אמיתי — בלי טלפון, ישירות כאן בכתב.') === null);
+    check('an assessment in writing is fine',
+      brain.enforceGuardrails('שלח צילום, ועו״ד פודים יגיד לך בכתב מה יש ומה חסר.') !== null);
+    check('"אתה בהחלט יכול" is blocked as certainty',
+      brain.enforceGuardrails('כן, אתה בהחלט יכול! 🙂', {}) === null);
+    check('no route is named for a birth in Czernowitz after 1940',
+      brain.enforceGuardrails('1952 נראה כמו מסלול של הסדרת רישום אצלך.',
+        { eligibility: { territory: 'bukovina', birthYear: '1948' } }) === null);
+    const sys = prompts.composeSystem({}, [], []);
+    check('the prompt refers investment questions to the lawyer', /השקעות נדל״ן מניבות ברומניה/.test(sys));
+    check('the prompt gives the meeting schedule', /א׳–ה׳, בשעות 17:00 או 18:00/.test(sys));
+    check('the prompt orders meeting → Zoom → phone', /פגישה במשרד[\s\S]{0,200}בזום[\s\S]{0,200}שיחת טלפון/.test(sys));
+    check('the bot requests, the office confirms', /אתה מבקש — המשרד מאשר/.test(sys));
+    const retrieve = require('../src/kb/retrieve');
+    check('an investment question retrieves the investments passage',
+      retrieve.retrieve('אתם מלווים גם השקעות נדל״ן ברומניה?')[0]?.id === 'romania_investments');
+
+    // Meeting-first close
+    const meeting = require('../src/sales/meeting');
+    const ready = { eligibility: { ancestor: 'אבא', birthPlace: 'יאשי', leftYear: '1971' } };
+    const close = closing.callClose(ready, {});
+    check('a meeting-ready lead is closed on the office meeting, not a call',
+      /פגישה של 45 דקות/.test(close) && close.includes(closing.SLOTS_TOKEN));
+    check('with Zoom and a phone call as the fallbacks', /בזום/.test(close) && close.includes(closing.OFFICE_PHONE));
+    check('a lead who declined the meeting gets a phone close',
+      !/פגישה של 45/.test(closing.callClose({ ...ready, meeting: { declines: 1 } }, {})));
+    check('a human handoff stays a callback',
+      !/פגישה של 45/.test(closing.callClose(ready, { variant: 'handoff' })));
+    check('a lead with no Romanian-born relative is not offered a meeting',
+      !/פגישה של 45/.test(closing.callClose({}, {})));
+    check('"יום שני" in answer to an offer counts as a yes', meeting.signalsMeetingInterest('יום שני'));
+
+    const ron = newPhone();
+    await say(ron, 'היי, אבא שלי נולד ביאשי ועזב ב-1971. אני זכאי?');
+    const priced = await say(ron, 'תן טווח, סדר גודל');
+    check('a price objection from a ready lead is answered with two real evenings',
+      /בשעה 1[78]:00/.test(priced), priced.slice(-200));
+    check('and the placeholder never reaches the customer', !priced.includes('{{'));
+    check('the slots are recorded', profileOf(ron)?.meeting?.status === 'slots_proposed');
+    const picked = await say(ron, 'יום שני');
+    check('picking a day requests that meeting', profileOf(ron)?.meeting?.status === 'requested');
+    check('and asks for name and phone to confirm it', /השם המלא ומספר הטלפון/.test(picked));
+    const done = await say(ron, 'רון כהן 0521234567');
+    check('name and number in one message are both captured',
+      profileOf(ron)?.name === 'רון כהן' && profileOf(ron)?.clientPhone === '0521234567');
+    check('and the request is confirmed, not re-asked',
+      /הבקשה לפגישה/.test(done) && !/מתי נוח/.test(done), done.slice(0, 120));
   }
 
   section('41. The template catalog matches the code');

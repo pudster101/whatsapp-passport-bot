@@ -14,6 +14,7 @@
  * Every terminal turn in the conversation runs through ensureCallClose().
  */
 
+const meeting = require('./meeting');
 const OFFICE_PHONE = '03-5517801';
 const HOURS = 'א׳–ה׳ 09:00–18:00';
 
@@ -46,6 +47,41 @@ function timeOptions() {
  *   - variant: 'ask_time' | 'ask_phone' | 'departing' | 'handoff'
  *   - seed:    number — rotates phrasing so a long conversation doesn't repeat
  */
+/**
+ * Where real meeting slots go. flows.reply() swaps this for two concrete
+ * evenings from meeting.nextSlots() — the slots have to come from the real
+ * calendar (and from what other leads already asked for), which this module
+ * cannot see. Anything that slips through unswapped is replaced there with a
+ * plain question, so the token itself can never reach a customer.
+ */
+const SLOTS_TOKEN = '{{MEETING_SLOTS}}';
+
+/**
+ * The office meeting is the goal; the phone call is the fallback.
+ *
+ * The 15 Oct trainer run had eight leads and zero meeting offers: every close
+ * was "מחר בבוקר או אחר הצהריים?" for a phone call, because the meeting
+ * branch sat below the objection, question and departure branches, and leads
+ * who ask about price hit those first every single turn. Routing the close
+ * itself through here means every terminal turn offers the meeting whenever
+ * the case is ready for one — whichever branch produced it.
+ */
+function meetingClose(profile = {}, variant = 'ask_phone') {
+  const name = profile.name ? `${profile.name}, ` : '';
+  const video = (profile.meeting || {}).mode === 'video';
+  const what = video
+    ? `*פגישת וידאו של ${meeting.MEETING_MINUTES} דקות עם עו״ד פודים*`
+    : `*פגישה של ${meeting.MEETING_MINUTES} דקות עם עו״ד פודים במשרד*`;
+  const lead = variant === 'departing'
+    ? `לפני שנסיים — ${name}הדרך הכי מהירה לתשובה ברורה היא ${what}`
+    : `${name}הצעד הכי יעיל מכאן הוא ${what}`;
+  const alt = video
+    ? `ואם נוח יותר — שיחת טלפון קצרה: *${OFFICE_PHONE}*.`
+    : `לא נוח להגיע? אותה פגישה אפשרית גם בזום, או בשיחת טלפון קצרה: *${OFFICE_PHONE}*.`;
+  return `${lead} — מביאים את המסמכים שיש, והוא אומר בדיוק מה המצב ומה חסר. ` +
+         `ללא עלות וללא התחייבות.\n\n${SLOTS_TOKEN}\n\n${alt}`;
+}
+
 function callClose(profile = {}, opts = {}) {
   const hasPhone = !!(profile.clientPhone);
   const name = profile.name ? `${profile.name}, ` : '';
@@ -54,6 +90,16 @@ function callClose(profile = {}, opts = {}) {
 
   const variant = opts.variant
     || (hasPhone ? 'ask_time' : 'ask_phone');
+
+  // Meeting first. A human callback (handoff), a lead on the way out who was
+  // just pitched (departing_brief), or an explicit phone close stays a call.
+  // Offered twice already and not taken up — stop pushing the meeting and let
+  // the phone close do its job.
+  if (!opts.phoneOnly && ['ask_phone', 'ask_time', 'departing'].includes(variant)
+      && meeting.isReadyForMeeting(profile)
+      && ((profile.meeting || {}).closeOffers || 0) < 2) {
+    return meetingClose(profile, variant);
+  }
 
   if (variant === 'departing') {
     // The lead is walking away. Do not chase — but do not end on "מה שנוח לך".
@@ -401,6 +447,8 @@ function signalsEnding(text) {
 }
 
 module.exports = {
+  SLOTS_TOKEN,
+  meetingClose,
   OFFICE_PHONE,
   HOURS,
   callClose,

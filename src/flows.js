@@ -209,8 +209,54 @@ function save(phone, session) {
 }
 
 /** Send a reply, record it in history, and keep the profile timestamps honest. */
+/**
+ * Put real meeting slots into a close, and remember that a meeting is on the
+ * table.
+ *
+ * closing.callClose() leaves a placeholder where the slots go; here they are
+ * filled from the real calendar (Sun–Thu, 17:00 / 18:00, at least three hours
+ * ahead, never a slot another lead already asked for), and the meeting is
+ * recorded as proposed so the next "יום שני" or "הראשון" books it.
+ *
+ * A meeting the model offered in its own words is recorded too: without that,
+ * the lead's "כן" on the next turn had nothing to attach to.
+ */
+function prepareMeetingOffer(phone, session, text) {
+  let out = String(text || '');
+  const p = session.profile || {};
+  const mtg = leadProfile.ensureMeeting(p);
+
+  if (out.includes(closing.SLOTS_TOKEN)) {
+    mtg.closeOffers = (mtg.closeOffers || 0) + 1;
+    const mode = mtg.mode === 'video' ? 'video' : 'office';
+    const slots = meeting.nextSlots({
+      count: 2, taken: meeting.takenSlots(storage.getAllConversations()),
+    });
+    if (slots.length && !['requested', 'confirmed'].includes(mtg.status)) {
+      mtg.mode = mode;
+      mtg.offered = slots;
+      mtg.offeredAt = new Date().toISOString();
+      mtg.status = 'slots_proposed';
+      storage.logEvent(phone, 'meeting_offered', {
+        at: 'close', mode, slots: slots.map(s => s.iso),
+      });
+      out = out.replace(closing.SLOTS_TOKEN, meeting.slotPrompt(slots, mode));
+    } else {
+      out = out.replace(closing.SLOTS_TOKEN, meeting.slotPrompt([], mode));
+      if (!mtg.status) { mtg.status = 'offered'; mtg.mode = mode; mtg.offeredAt = new Date().toISOString(); }
+    }
+  } else if (!mtg.status && meeting.mentionsMeetingOffer(out)) {
+    mtg.status = 'offered';
+    mtg.mode = /זום|וידאו/.test(out) && !/משרד/.test(out) ? 'video' : (mtg.mode || 'office');
+    mtg.offeredAt = new Date().toISOString();
+    storage.logEvent(phone, 'meeting_offered', { at: 'ai', mode: mtg.mode });
+  }
+  return out;
+}
+
 async function reply(phone, session, text) {
   if (!text) return false;
+  text = prepareMeetingOffer(phone, session, text);
   const parts = wa.splitMessage(text);
   let ok = true;
   for (const [i, part] of parts.entries()) {
@@ -989,6 +1035,19 @@ async function handleFreeText(phone, session, text, opts = {}) {
     // clear enough to be worth an evening. The phone call is the fallback, not
     // the goal.
     const pending = leadProfile.ensureMeeting(p);
+
+    // They already picked a slot and this message completes the details:
+    // confirm the request — do not offer new slots and do not ask "when".
+    if (pending.status === 'requested' && pending.slotLabel) {
+      await reply(phone, session,
+        `🎉 *תודה, ${p.name || ''}!*\n\nהבקשה לפגישה ב*${pending.slotLabel}* אצלנו. ` +
+        `עו״ד פודים יאשר אותה, ותקבל הודעה כאן בוואטסאפ.\n\n` +
+        `אם משהו משתנה — *${closing.OFFICE_PHONE}*.`);
+      await maybeSaveLead(phone, session);
+      save(phone, session);
+      return;
+    }
+
     const canBook = !['requested', 'confirmed'].includes(pending.status)
                     && (pending.accepted || meeting.isReadyForMeeting(p));
 
@@ -1051,8 +1110,18 @@ async function handleFreeText(phone, session, text, opts = {}) {
       });
       console.log(`📅 [${phone}] meeting requested — ${picked.label} (${mtg.mode})`);
 
-      // A meeting with no number to confirm it on is not a meeting.
-      const body = closing.withPhoneAsk(meeting.pendingText(p, picked, mtg.mode), p);
+      // A meeting with no number to confirm it on is not a meeting. Ask for
+      // exactly what is missing, and put the conversation into the contact
+      // states so the answer is captured deterministically — on 16 Oct a lead
+      // who typed his name after "לאיזה מספר?" was asked for his name again.
+      let body = meeting.pendingText(p, picked, mtg.mode);
+      if (!p.name) {
+        session.state = 'LEAD_NAME';
+        body += `\n\nכדי שהמשרד יאשר לך את הפגישה — *מה השם המלא ומספר הטלפון שלך?*`;
+      } else if (!p.clientPhone) {
+        session.state = 'LEAD_PHONE';
+        body += `\n\n${p.name}, *לאיזה מספר לשלוח את אישור הפגישה?*`;
+      }
       await reply(phone, session, body);
 
       await maybeSaveLead(phone, session);
@@ -1119,7 +1188,8 @@ async function handleFreeText(phone, session, text, opts = {}) {
   // 5. Compose the reply — AI first, scripted fallback
   let replyText = null;
   if (aiWillCompose && !decision.forceFallback) {
-    replyText = await brain.compose(analysis, p, session.history || [], decision.directive);
+    replyText = await brain.compose(analysis, p, session.history || [],
+      (decision.directive || '') + (decision.directiveSuffix || ''));
   }
   const aiComposed = !!replyText;
   if (!replyText) {
@@ -1138,6 +1208,13 @@ async function handleFreeText(phone, session, text, opts = {}) {
   }
 
   if (!aiComposed) replyText = avoidTemplateRepeat(session, replyText);
+
+  // A meeting offered in the model's own words still gets real slots: the
+  // model is told never to name a day or an hour, so the times come from here.
+  if (decision.offerMeeting && aiComposed && !replyText.includes(closing.SLOTS_TOKEN)
+      && !['requested', 'confirmed'].includes(mtg.status)) {
+    replyText = `${closing.stripTrailingAsk(replyText)}\n\n${closing.SLOTS_TOKEN}`;
+  }
   replyText = avoidRepetition(session, replyText);
 
   // We already said hello in a separate message (handleStart). The model,
@@ -1333,15 +1410,21 @@ async function handleScriptedState(phone, session, text, analysis) {
     }
 
     case 'LEAD_NAME': {
+      // "רון כהן 0521234567" — name and number in one message.
+      const inlinePhone = text.match(PHONE_RE)?.[0] || null;
+      const nameText = inlinePhone ? text.replace(inlinePhone, '').replace(/[,\-–]+/g, ' ').trim() : text.trim();
       if (analysis?.profileUpdates?.name) p.name = analysis.profileUpdates.name;
-      else if (text.trim().length >= 2) p.name = text.trim();
-      else {
+      else if (nameText.length >= 2) p.name = nameText;
+      else if (!inlinePhone) {
         await reply(phone, session, 'אנא הזן שם מלא כדי שנוכל להמשיך. 😊');
         return true;
       }
       session.state = 'LEAD_PHONE';
-      await reply(phone, session,
-        `תודה *${p.name}*! 🙏\n\nומה *מספר הטלפון* שלך לחזרה?`);
+      if (inlinePhone) return handleScriptedState(phone, session, inlinePhone, analysis);
+      const forMeeting = (p.meeting || {}).status === 'requested';
+      await reply(phone, session, forMeeting
+        ? `תודה *${p.name}*! 🙏\n\nומה *מספר הטלפון* לאישור הפגישה?`
+        : `תודה *${p.name}*! 🙏\n\nומה *מספר הטלפון* שלך לחזרה?`);
       return true;
     }
 
@@ -1363,6 +1446,18 @@ async function handleScriptedState(phone, session, text, analysis) {
       const timeAsk = timeAlreadySet
         ? `נתראה במועד שקבענו. אם משהו משתנה — *${closing.OFFICE_PHONE}*.`
         : closing.callClose(p, { variant: 'ask_time' });
+
+      // A meeting slot was already requested: confirm it, do not ask "when"
+      // again and do not re-send the consultation blurb.
+      const req = p.meeting || {};
+      if (req.status === 'requested' && req.slotLabel) {
+        await reply(phone, session,
+          `🎉 *תודה, ${p.name}!*\n\nהבקשה לפגישה ב*${req.slotLabel}* אצלנו. ` +
+          `עו״ד פודים יאשר אותה, ותקבל הודעה כאן בוואטסאפ.\n\n` +
+          `אם משהו משתנה — *${closing.OFFICE_PHONE}*.`);
+        await maybeSaveLead(phone, session);
+        return true;
+      }
 
       const isCourse = p.interest?.includes('b1_course');
       await reply(phone, session, isCourse
@@ -1735,7 +1830,7 @@ function askOf(text) {
  */
 const SECOND_TIME = [
   p => `לא אחזור על מה שכבר כתבתי. 🙂 בקצרה: את המספר נותן רק עו״ד פודים, אחרי שהוא רואה מה יש בתיק.\n\n` +
-       `אם לא נוח לך לדבר — *שלח כאן צילום של המסמכים שיש לך*, והוא יעבור עליהם ויענה לך כאן בכתב.`,
+       `אם לא נוח לך לדבר — *שלח כאן צילום של המסמכים שיש לך*, והוא יעבור עליהם ויגיד לך כאן מה יש ומה חסר.`,
   p => `אני מבין שזו לא התשובה שרצית, ואני לא רוצה להתיש אותך באותו הסבר. 🙏\n\n` +
        `שתי דרכים בלי שיחה: לשלוח כאן צילומי מסמכים לעו״ד פודים, או להתקשר כשנוח לך — *${closing.OFFICE_PHONE}* · ${closing.HOURS}.`,
   p => closing.callClose(p, { variant: 'departing_brief' }),

@@ -406,6 +406,10 @@ function pickModel(analysis) {
 // Note: \b is an ASCII word boundary and does NOT work after Hebrew letters,
 // so trailing boundaries are omitted on Hebrew currency words.
 const FEE_PATTERNS = [
+  // "כ-15-20K עבור ארבעתכם" (מיכל, 15 Oct). A K after a number is money here,
+  // whatever the sentence around it says — there was no "מחיר" in that one.
+  /\d+(?:[.,]\d+)?\s*[-–]?\s*(?:\d+(?:[.,]\d+)?\s*)?[KkК](?![A-Za-z])/,
+  /\d+\s*(?:אלף|אלפים)(?=$|[\s.,!?;:)\-–])/,
   /(\d[\d,.]{2,})\s*(?:₪|ש"ח|ש״ח|שקל|שח)/i,
   /(?:₪|\$)\s*\d[\d,.]{2,}/,
   /\d[\d,.]{2,}\s*(?:יורו|אירו|euro|eur)/i,
@@ -451,6 +455,12 @@ const ROUTE_AS_FACT = [
  * כפולים ומשולשים" quantifies the fee just as effectively without one.
  */
 const COMPARATIVE_FEE = [
+  // "אתה בקצה הזול יחסית של הטווחים במשרד", "העלות אצלך צפויה להיות בטווח
+  // הנמוך", "תהליך יותר מורכב ויקר יותר" (15 Oct) — a price, said relatively.
+  /(?:זול|יקר)(?:ה|ים|ות)?\s+(?:יחסית|יותר)/,
+  /(?:ויקר|וזול)\s+יותר/,
+  /(?:ה|ב|מ)?(?:טווח|קצה)\s+ה?(?:נמוך|זול|גבוה|יקר)/,
+  /(?:עלות|מחיר)\s+(?:נמוכה|גבוהה|נמוך|גבוה)\s+(?:יחסית|יותר)/,
   // "זה יכול להשתנות בגורם של 3-4" (רותם, 14 Oct) and "בערך בחצי מהמחיר
   // האמיתי" (רון) both tell the lead how far apart prices are.
   /בגורם\s+של\s*\d/,
@@ -620,6 +630,8 @@ function mixesGenerationLimit(text) {
  * lead on 12 Sep whose grandfather's birthplace was not even established.
  */
 const CERTAIN_ELIGIBILITY = [
+  // "כן, אתה בהחלט יכול!" as the first line to a lead (אלכס, 15 Oct).
+  /בהחלט\s+(?:יכול|יכולה|תוכל|תוכלי|אפשרי|מגיע|בתמונה)/,
   // "את בהחלט זכאית — סבתא עלתה בשנות ה-50" (רותם, 14 Oct). "בהחלט" and
   // "אוטומטית" are certainty in other words.
   /בהחלט\s+זכא/,
@@ -666,8 +678,55 @@ function block(reason) {
   return null;
 }
 
+/**
+ * The bot never claims to be a person. On 15 Oct, asked "אתה בכלל בן אדם או
+ * בוט?", it answered "אני בן אדם, לא בוט". The prompt already required the
+ * truth; this makes it impossible to send anything else.
+ */
+const CLAIMS_HUMAN = [
+  /אני\s+(?:בן|בת)[\s-]+אדם/,
+  /(?:אני\s+)?לא\s+(?:בוט|רובוט|צ׳אטבוט|צ'אטבוט|צאטבוט)(?=$|[\s.,!?—-])/,
+  /אני\s+(?:אדם|אישה|איש)\s+(?:אמיתי|אמיתית)/,
+];
+
+/**
+ * Documents sent over WhatsApp get an answer about what is there and what is
+ * missing — never a price in writing. On 15 Oct the bot told אלכס "עו״ד פודים
+ * יגיד לך מספר אמיתי — בלי טלפון, ישירות כאן בכתב", and he closed with
+ * "ואתה תגיד לי מחיר בכתב כמו שהבטחת".
+ */
+const WRITTEN_PRICE_PROMISE = [
+  /(?:מחיר|הצעת\s+מחיר|טווח|עלות|מספר(?!\s+(?:ה)?טלפון))[^.\n?]{0,70}בכתב/,
+  /בכתב[^.\n?]{0,40}(?:מחיר|הצעת\s+מחיר|כמה\s+זה\s+עולה|עלות)/,
+];
+
+/**
+ * Born in Bessarabia, northern Bukovina or Herța AFTER 1940 means born in the
+ * Soviet Union, not in Romania, and "leaving" from there was not leaving
+ * Romania. On 15 Oct a mother born in Czernowitz in 1948 who "left in 1952
+ * for Ukraine" was put on the short track. No route may be named for such a
+ * case — it runs through her parents, and the lawyer decides.
+ */
+const ART11_TERRITORY = /^(?:bessarabia|bukovina|hertsa)$/;
+function claimsRouteForSovietBirth(text, profile) {
+  const e = profile?.eligibility || {};
+  const born = parseInt(e.birthYear, 10);
+  if (!born || born <= 1940) return false;
+  if (!ART11_TERRITORY.test(e.territory || '')) return false;
+  return ROUTE_CLAIM.some(re => re.test(text)) || SHORT_TRACK_CLAIM.some(re => re.test(text));
+}
+
 function enforceGuardrails(text, profile = null) {
   lastBlockReason = null;
+  if (CLAIMS_HUMAN.some(re => re.test(text))) {
+    return block('🛑 Guardrail: claimed to be a human — must say it is the office\'s digital assistant');
+  }
+  if (WRITTEN_PRICE_PROMISE.some(re => re.test(text))) {
+    return block('🛑 Guardrail: promised a price in writing — documents get an assessment of what is missing, not a price');
+  }
+  if (profile && claimsRouteForSovietBirth(text, profile)) {
+    return block('🛑 Guardrail: route named for a birth in Soviet-era Bessarabia/Bukovina (after 1940) — runs through the parents, lawyer decides');
+  }
   if (profile && claimsRouteWithoutPlace(text, profile)) {
     return block('🛑 Guardrail: route asserted without a birthplace — 10 vs 11 is undecided');
   }

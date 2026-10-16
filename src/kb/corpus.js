@@ -28,6 +28,17 @@ const SOURCES = {
 };
 
 const PASSAGES = [
+  // ═══ Investments in Romania — the firm handles these; refer to the lawyer ═══
+  {
+    id: 'romania_investments',
+    topics: ['השקעה', 'השקעות', 'נדל"ן ברומניה', 'נדל״ן ברומניה', 'לקנות ברומניה', 'עסק ברומניה',
+             'חברה ברומניה', 'נכס מניב', 'נדלן'],
+    src: 'D',
+    text: `המשרד מלווה גם *השקעות נדל״ן מניבות ברומניה* — לצד הטיפול באזרחות, ובעזרת קשרים עם
+עורכי דין ואנשי מקצוע ברומניה. מי שמתעניין בהשקעה, בנכס או בפתיחת עסק ברומניה — עו״ד פודים
+ישמח לדבר על זה ישירות, ואפשר גם באותה פגישה במשרד.
+פרטים על נכסים, מחירים או תשואות נותן רק עו״ד פודים.`,
+  },
   // ═══ THE THREE GROUPS — the core of every eligibility conversation ═══
   {
     id: 'groups_overview',

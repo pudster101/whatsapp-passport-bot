@@ -2102,7 +2102,11 @@ async function run() {
       /בשעה 1[78]:00/.test(priced), priced.slice(-200));
     check('and the placeholder never reaches the customer', !priced.includes('{{'));
     check('the slots are recorded', profileOf(ron)?.meeting?.status === 'slots_proposed');
-    const picked = await say(ron, 'יום שני');
+    // Pick whichever evening was actually offered. On a machine whose database
+    // already holds requests (trainer runs book slots too), Monday may be
+    // taken and the offer is Sunday + Tuesday — "יום שני" would match nothing.
+    const offeredDay = /יום ([^\s,]+)/.exec(profileOf(ron)?.meeting?.offered?.[1]?.label || 'יום שני')[1];
+    const picked = await say(ron, `יום ${offeredDay}`);
     check('picking a day requests that meeting', profileOf(ron)?.meeting?.status === 'requested');
     check('and asks for name and phone to confirm it', /השם המלא ומספר הטלפון/.test(picked));
     const done = await say(ron, 'רון כהן 0521234567');

@@ -263,7 +263,14 @@ const BENEFITS = {
 // ─── Pricing policy ───────────────────────────────────────────────────────────
 
 const PRICING = {
-  policy: 'NEVER_QUOTE',
+  // Owner's decision, 16 Oct 2026: a lead who insists on a figure may be given
+  // the firm's general fee range — always with the caveat that every case is
+  // examined on its own merits, and always pointing to a meeting or a
+  // consultation call for the real, personal price. Nothing narrower, no
+  // per-person split, no "you will be at the low end".
+  policy: 'RANGE_ON_INSISTENCE',
+  range: { min: 8000, max: 14000, text: '8,000 ל-14,000 ₪' },
+  caveat: 'כל מקרה נבחן לגופו, והמחיר תלוי בתיק עצמו',
   explanation:
     'העלות נקבעת לפי מורכבות התיק ולכן לא ניתן לתת מספר אמין בלי להבין את המקרה.',
   drivers: [
@@ -274,8 +281,9 @@ const PRICING = {
     'שינויי שם ופערים בין מסמכים ישראליים לרומניים',
   ],
   whatToSay:
-    'משרד רציני לא זורק מספר לפני שהוא מבין את התיק. בשיחת ייעוץ עם עורך דין ' +
-    'תקבלו טווח עלויות מדויק למקרה שלכם.',
+    'בפעם הראשונה: מה משפיע על העלות, והפניה לפגישה או לשיחת ייעוץ. ' +
+    'למי שמתעקש: טווח המחירים הכללי של המשרד, 8,000 ל-14,000 ₪ — תמיד עם ההבהרה שכל מקרה ' +
+    'נבחן לגופו ותלוי בתיק עצמו, ועם הפניה לפגישה או לשיחת ייעוץ לקבלת מחיר נכון ומותאם אישית.',
   knownFees: {
     b1Exam: 'כ-50 יורו — דמי רישום לבחינת B1 (עלות חיצונית של המכון, לא שכר טרחה)',
   },

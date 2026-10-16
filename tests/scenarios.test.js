@@ -2152,6 +2152,66 @@ async function run() {
     check('the prompt forbids inventing a refund policy', /מדיניות החזרים, ביטוח, מספר רישיון/.test(prompts.composeSystem({}, [], [])));
   }
 
+  section('59. Price range on insistence; trainer run 16 Oct 15:17 — fixed 16 Oct');
+  {
+    const RANGE = 'טווח המחירים שלנו נע בין 8,000 ל-14,000 ₪. כל מקרה נבחן לגופו והמחיר תלוי בתיק עצמו — ' +
+                  'כדי לקבל מחיר מותאם אישית, פגישה עם עו״ד פודים או שיחת ייעוץ.';
+    check('the range is blocked before the lead insisted',
+      brain.enforceGuardrails(RANGE, { priceRangeAllowed: false }) === null);
+    check('the range passes, unchanged, once the lead insisted',
+      brain.enforceGuardrails(RANGE, { priceRangeAllowed: true }) === RANGE);
+    check('the range without "נבחן לגופו" is blocked',
+      brain.enforceGuardrails('טווח המחירים שלנו נע בין 8,000 ל-14,000 ₪. נשמח לפגישה.', { priceRangeAllowed: true }) === null);
+    check('the range without a meeting/consultation referral is blocked',
+      brain.enforceGuardrails('המחיר נע בין 8,000 ל-14,000 ₪, כל מקרה נבחן לגופו.', { priceRangeAllowed: true }) === null);
+    check('a narrower range is still blocked, even after insisting',
+      brain.enforceGuardrails('אצלך זה יהיה 9,000 עד 11,000 ₪. כל מקרה נבחן לגופו, נשמח לפגישה.', { priceRangeAllowed: true }) === null);
+    check('the range plus "you will be at the low end" is blocked',
+      brain.enforceGuardrails(RANGE + ' אצלך זה כנראה בקצה התחתון.', { priceRangeAllowed: true }) === null);
+    check('"ההפרש בין 6,000 ל-12,000" is blocked without any money word',
+      brain.enforceGuardrails('ההפרש בין 6,000 ל-12,000 תלוי במסמכים שלך.', {}) === null);
+    check('"התעריף יהיה הרבה יותר נמוך" is blocked',
+      brain.enforceGuardrails('במקרה שלך התעריף יהיה הרבה יותר נמוך.', {}) === null);
+
+    // Insistence opens the range — through the whole flow, scripted.
+    const ph = newPhone();
+    await say(ph, 'היי, סבא שלי נולד בבוקרשט ועזב ב-1960. כמה זה עולה?');
+    const r1 = await say(ph, 'אני שואל שוב — כמה זה עולה? תן לי סדר גודל');
+    const pr = profileOf(ph);
+    check('the second price ask opens the range', pr.priceRangeAllowed === true, JSON.stringify(pr.priceAsks));
+    check('and the reply gives 8,000–14,000', /8,000 ל-14,000/.test(r1), r1.slice(0, 200));
+    check('with the caveat that every case is examined on its merits', /לגופו/.test(r1) && /תלוי בתיק/.test(r1));
+    check('and a referral to a meeting or consultation', /פגישה|שיחת ייעוץ/.test(r1));
+    check('the range is remembered as given', profileOf(ph).priceRangeGiven === true);
+    const once = newPhone();
+    const o1 = await say(once, 'היי, אמא שלי נולדה ביאשי ועזבה ב-1975. כמה זה עולה?');
+    check('a first price ask gets no figure', !/\d{1,3},\d{3}/.test(o1), o1.slice(0, 200));
+
+    // claimsShortTrack: a conditional explanation is the law, not a promise
+    const ron = { eligibility: { birthPlace: 'בוקרשט' } };
+    check('"אם הסבא שלך עזב ב-1950–1952, האזרחות לא אבדה" passes',
+      brain.enforceGuardrails('אם הסבא שלך עזב ב-1950–1952, האזרחות לא אבדה. לכן השנה חשובה.', ron) !== null);
+    check('"אצלך האזרחות לא אבדה" with no year is still blocked',
+      brain.enforceGuardrails('אצלך האזרחות לא אבדה.', ron) === null);
+
+    // Soviet-era birth described as "born in Romania"
+    check('"נולדה ברומניה, בצ׳רנוביץ ב-1948" is blocked',
+      brain.enforceGuardrails('היא נולדה ברומניה, בצ׳רנוביץ ב-1948, ולכן יש בסיס.', {}) === null);
+    check('"כן, בהחלט" as an eligibility answer is blocked',
+      brain.enforceGuardrails('כן, בהחלט! לפי סעיף 11 זה עובד.', {}) === null);
+    check('a meeting "בבוקר" is blocked',
+      brain.enforceGuardrails('אפשר לקבוע פגישה ביום שני בבוקר.', {}) === null);
+
+    const sys = prompts.composeSystem({}, [], []);
+    check('the prompt carries the approved range and its conditions',
+      /8,000 ל-14,000/.test(sys) && /נבחן לגופו/.test(sys));
+    check('the prompt forbids inventing payment terms', /תנאי תשלום/.test(sys));
+    check('the prompt explains generation counting', /הילדים שלכם הם \*נינים\*/.test(sys));
+
+    const flowsSrc = require('fs').readFileSync(path.join(__dirname, '..', 'src', 'flows.js'), 'utf8');
+    check('no meeting pitch under a reply that already said goodbye', /alreadySignedOff/.test(flowsSrc));
+  }
+
   section('41. The template catalog matches the code');
   {
     const fs = require('fs');

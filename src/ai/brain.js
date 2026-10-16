@@ -406,6 +406,10 @@ function pickModel(analysis) {
 // Note: \b is an ASCII word boundary and does NOT work after Hebrew letters,
 // so trailing boundaries are omitted on Hebrew currency words.
 const FEE_PATTERNS = [
+  // A number written with a thousands separator is money in this bot, in any
+  // sentence: "ההפרש בין 6,000 ל-12,000 תלוי במסמכים" (שירה, 16 Oct) had no
+  // money word in it at all. Years and phone numbers never carry a comma.
+  /\d{1,3}(?:,\d{3})+/,
   // "כ-15-20K עבור ארבעתכם" (מיכל, 15 Oct). A K after a number is money here,
   // whatever the sentence around it says — there was no "מחיר" in that one.
   /\d+(?:[.,]\d+)?\s*[-–]?\s*(?:\d+(?:[.,]\d+)?\s*)?[KkК](?![A-Za-z])/,
@@ -455,6 +459,11 @@ const ROUTE_AS_FACT = [
  * כפולים ומשולשים" quantifies the fee just as effectively without one.
  */
 const COMPARATIVE_FEE = [
+  // "התעריף יהיה הרבה יותר נמוך", "העלות אצלך נמוכה יותר ממה שחשבת" (16 Oct)
+  /(?:עלות|העלות|מחיר|המחיר|תעריף|התעריף|שכר\s*(?:ה)?טרחה)[^.\n?]{0,25}(?:נמוך|נמוכה|גבוה|גבוהה|זול|זולה|יקר|יקרה)/,
+  /ההפרש\s+בין[^.\n]{0,15}\d/,
+  /(?:ב)?(?:קצה|תחתית|ראש)\s+(?:ה)?(?:טווח|תחתון|עליון)/,
+  /(?:ה)?קצה\s+ה?(?:תחתון|עליון)/,
   // "אתה בקצה הזול יחסית של הטווחים במשרד", "העלות אצלך צפויה להיות בטווח
   // הנמוך", "תהליך יותר מורכב ויקר יותר" (15 Oct) — a price, said relatively.
   /(?:זול|יקר)(?:ה|ים|ות)?\s+(?:יחסית|יותר)/,
@@ -591,6 +600,15 @@ function claimsShortTrack(text, profile) {
   if (!ABOUT_THIS_LEAD.test(text)) return false;      // general explanation — fine
   if (!SHORT_TRACK_CLAIM.some(re => re.test(text))) return false;
 
+  // "אם הסבא עזב ב-1950–1952, האזרחות לא אבדה" explains the law; it does not
+  // put this lead on the short track. רון asked three times on 16 Oct why the
+  // year matters, and three times the answer was blocked and replaced with a
+  // template. A claim that sits inside a conditional sentence is allowed.
+  const sentences = String(text).split(/(?<=[.!?\n])/);
+  const claimSentences = sentences.filter(s => SHORT_TRACK_CLAIM.some(re => re.test(s)));
+  const CONDITIONAL = /(?:^|[\s(—–-])(?:אם|במידה\s+ו|במקרה\s+ש|כאשר|כש\S)/;
+  if (claimSentences.length && claimSentences.every(s => CONDITIONAL.test(s))) return false;
+
   // An approximate year cannot support a claim that depends on hitting an exact
   // three-year window. "תחילת שנות ה-50" is treated exactly like no year at all.
   if (profile?.eligibility?.leftYearApprox) return true;
@@ -716,13 +734,48 @@ function claimsRouteForSovietBirth(text, profile) {
   return ROUTE_CLAIM.some(re => re.test(text)) || SHORT_TRACK_CLAIM.some(re => re.test(text));
 }
 
+/**
+ * The approved fee range (owner, 16 Oct): 8,000–14,000 ₪, only for a lead who
+ * insisted, only with the caveat and the referral. It is lifted out of the
+ * text before the fee checks run, so every OTHER figure is still blocked.
+ */
+const APPROVED_RANGE = /8[,.]?000\s*(?:₪|ש"ח|ש״ח|שקלים|שקל)?\s*(?:[-–—]|עד|ל-?|ל)\s*14[,.]?000\s*(?:₪|ש"ח|ש״ח|שקלים|שקל)?|8\s*[-–]\s*14\s*אלף(?:\s*(?:₪|ש"ח|שקל))?/g;
+const RANGE_CAVEAT = /לגופו|תלוי\s+(?:ב)?(?:תיק|מקרה)|תלוי\s+בתיק|תלוי\s+במקרה/;
+const RANGE_REFERRAL = /פגיש|שיחת?\s+(?:ה)?ייעוץ|שיחה\s+קצרה|שיחה\s+עם/;
+
 function enforceGuardrails(text, profile = null) {
   lastBlockReason = null;
+  const original = text;
+  APPROVED_RANGE.lastIndex = 0;
+  if (APPROVED_RANGE.test(text)) {
+    APPROVED_RANGE.lastIndex = 0;
+    if (profile && !profile.priceRangeAllowed) {
+      return block('🛑 Guardrail: fee range given before the lead insisted — first explain what drives the cost');
+    }
+    if (!RANGE_CAVEAT.test(text)) {
+      return block('🛑 Guardrail: fee range without the caveat that every case is examined on its merits');
+    }
+    if (!RANGE_REFERRAL.test(text)) {
+      return block('🛑 Guardrail: fee range without referring to a meeting or consultation for the real price');
+    }
+    text = text.replace(APPROVED_RANGE, ' [טווח המשרד] ');
+  }
+  if (/(?:פגיש|להגיע\s+למשרד)[^.\n?]{0,50}(?:בבוקר|בוקר|בצהריים|ביום\s+שישי|בשבת)/.test(text)) {
+    return block('🛑 Guardrail: proposed a meeting at a time that does not exist — meetings are Sun–Thu, 17:00/18:00, and the system adds the slots');
+  }
   if (CLAIMS_HUMAN.some(re => re.test(text))) {
     return block('🛑 Guardrail: claimed to be a human — must say it is the office\'s digital assistant');
   }
   if (WRITTEN_PRICE_PROMISE.some(re => re.test(text))) {
     return block('🛑 Guardrail: promised a price in writing — documents get an assessment of what is missing, not a price');
+  }
+  if (/נולד(?:ה)?\s+(?:ב)?רומניה/.test(text) &&
+      /(?:צ׳רנוביץ|צ'רנוביץ|צרנוביץ|בוקובינה|בסרביה|כישינב|קישינב|הרצה)/.test(text) &&
+      /(?:^|\D)(?:19(?:4[1-9]|[5-8]\d|9[01]))(?!\d)/.test(text)) {
+    return block('🛑 Guardrail: said "born in Romania" for a birth in Bessarabia/Bukovina after 1940 — that was the Soviet Union');
+  }
+  if (/(?:^|\n)\s*כן,?\s*בהחלט/.test(text) && /(?:זכא|סעיף|מסלול|נחשב)/.test(text)) {
+    return block('🛑 Guardrail: "כן, בהחלט" as an eligibility answer — certainty the authorities have not given');
   }
   if (profile && claimsRouteForSovietBirth(text, profile)) {
     return block('🛑 Guardrail: route named for a birth in Soviet-era Bessarabia/Bukovina (after 1940) — runs through the parents, lawyer decides');
@@ -784,7 +837,7 @@ function enforceGuardrails(text, profile = null) {
   if (leaksScaffold(text)) {
     return block('🛑 Guardrail: prompt scaffolding in AI reply');
   }
-  return text;
+  return original;
 }
 
 /**

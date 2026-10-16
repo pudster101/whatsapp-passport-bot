@@ -82,6 +82,20 @@ function meetingClose(profile = {}, variant = 'ask_phone') {
          `ללא עלות וללא התחייבות.\n\n${SLOTS_TOKEN}\n\n${alt}`;
 }
 
+/**
+ * The approved fee range, for a lead who keeps asking. Owner's wording rules
+ * (16 Oct): the range, then that every case is examined on its merits and
+ * depends on the file, then the meeting / consultation for the real price.
+ */
+function priceRangeAnswer(profile = {}) {
+  const name = profile.name ? `${profile.name}, ` : '';
+  return `${name}מבין שחשוב לך סדר גודל לפני שמשקיעים זמן. 🙂\n\n` +
+         `טווח המחירים שלנו נע בין *8,000 ל-14,000 ₪*. ` +
+         `חשוב לי להדגיש: כל מקרה נבחן לגופו, והמחיר תלוי בתיק עצמו — אילו מסמכים כבר קיימים, ` +
+         `מה צריך לאתר וכמה בני משפחה נכנסים לתיק.\n\n` +
+         `כדי לקבל מחיר נכון ומותאם אישית — פגישה עם עו״ד פודים או שיחת ייעוץ קצרה, ללא עלות וללא התחייבות.`;
+}
+
 function callClose(profile = {}, opts = {}) {
   const hasPhone = !!(profile.clientPhone);
   const name = profile.name ? `${profile.name}, ` : '';
@@ -453,6 +467,7 @@ function signalsEnding(text) {
 }
 
 module.exports = {
+  priceRangeAnswer,
   SLOTS_TOKEN,
   meetingClose,
   OFFICE_PHONE,

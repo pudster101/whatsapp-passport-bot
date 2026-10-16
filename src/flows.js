@@ -1173,6 +1173,14 @@ async function handleFreeText(phone, session, text, opts = {}) {
   const closedRecently =
     session.lastCloseTurn !== undefined &&
     ((p.messageCount || 0) - session.lastCloseTurn) < 3;
+  // How many times has this lead asked for a price? The second ask opens the
+  // approved range (owner's decision, 16 Oct).
+  if (nextAction.PRICE_ASK_RE.test(text) || objections.detect(text).some(o =>
+        ['need_price_first', 'price_too_high', 'cheaper_competitor'].includes(o))) {
+    p.priceAsks = (p.priceAsks || 0) + 1;
+    if (p.priceAsks >= 2) p.priceRangeAllowed = true;
+  }
+
   const decision = nextAction.decide({
     analysis, profile: p, text, recentClose: closedRecently,
   });
@@ -1309,7 +1317,12 @@ async function handleFreeText(phone, session, text, opts = {}) {
   // message, "מעביר את הפרטים לעו״ד פודים שיחזור אליך אישית — היום אחר הצהריים
   // או מחר בבוקר?". He had left neither a name nor a number, and his file still
   // says HUMAN_HANDOFF.
-  if (terminalTurn && !p.notEligible && p.stage !== 'NOT_ELIGIBLE') {
+  // The model already said goodbye and asked them to come back ("תחזרי אליי
+  // עם השנה", "בהצלחה עם הבדיקה") — a meeting pitch bolted underneath reads as
+  // not having listened. דנה and מיכל, 16 Oct.
+  const alreadySignedOff = aiComposed &&
+    /(?:תחזור|תחזרי|תכתוב לי|תכתבי לי|כשתברר|כשתבררי|כשתדע|כשתדעי|בהצלחה|נמשיך משם|תעדכן|תעדכני)/.test(replyText);
+  if (terminalTurn && !alreadySignedOff && !p.notEligible && p.stage !== 'NOT_ELIGIBLE') {
     const before = replyText;
     replyText = closing.ensureCallClose(replyText, p, {
       variant: decision.escalate
@@ -1324,6 +1337,7 @@ async function handleFreeText(phone, session, text, opts = {}) {
   }
   if (closing.hasCallClose(replyText)) session.lastCloseTurn = turn;
 
+  if (/8,000\s*(?:₪)?\s*(?:ל-?|עד|[-–])\s*14,000/.test(replyText)) p.priceRangeGiven = true;
   await reply(phone, session, replyText);
 
   // 6. Mark objections we just answered as addressed

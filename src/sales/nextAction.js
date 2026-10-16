@@ -85,6 +85,7 @@ function decide({ analysis, profile, text, recentClose = false }) {
   // "we just closed, don't nag" rule silenced the ask at the warmest moment.
   const noNumber = closing.needsPhoneAsk(profile);
   const PRICE_OBJECTIONS = ['need_price_first', 'price_too_high', 'cheaper_competitor'];
+  const PRICE_ASK = /(?:כמה\s+(?:זה\s+|זה\s+בערך\s+|בערך\s+)?(?:עולה|יוצא|יעלה)|טווח|מחיר|עלות|סדר\s+גודל|שכר\s*טרחה)/;
 
   // Is this case ready for the office meeting? Then every close below points
   // there, and a phone call is the fallback — not the other way round.
@@ -94,6 +95,7 @@ function decide({ analysis, profile, text, recentClose = false }) {
     && ((profile.meeting || {}).closeOffers || 0) < 2
     && (profile.messageCount || 0) >= 2;
   const askingPrice = objections.detect(text).some(o => PRICE_OBJECTIONS.includes(o));
+  const askingPriceAny = askingPrice || intent === 'ask_cost' || PRICE_ASK.test(text);
   const GOAL =
     meetingReady
       ? 'הצע *פגישה של 45 דקות במשרד עם עו״ד פודים* (אשכנזי 21, תל אביב), ללא עלות וללא התחייבות; ' +
@@ -157,6 +159,30 @@ function decide({ analysis, profile, text, recentClose = false }) {
         `לא נטריד אותך שוב בעניין הזה. אם יעלה משהו — *${closing.OFFICE_PHONE}*.`,
       escalate: true,
       suppressFollowUp: true,
+    };
+  }
+
+  // 1d. A lead who keeps asking for a price gets the firm's approved range —
+  //     once, with the caveat and the referral. Owner's decision, 16 Oct: the
+  //     trainer kept showing price-pressed leads leaving after the second or
+  //     third "אני לא יכול לנקוב במחיר". It sits above frustration on purpose:
+  //     "אתה לא עונה לי!" about price IS the frustration, and the range answers it.
+  if (profile.priceRangeAllowed && !profile.priceRangeGiven && askingPriceAny) {
+    return {
+      action: ACTIONS.HANDLE_OBJECTION,
+      reason: 'insists on a price — approved range',
+      directive:
+        'הלקוח מתעקש על מחיר. עכשיו מותר — ורצוי — לתת את טווח המחירים הכללי של המשרד: ' +
+        '*8,000 ל-14,000 ₪*. חובה לכלול באותה הודעה: (1) שכל מקרה נבחן לגופו והמחיר תלוי בתיק עצמו; ' +
+        '(2) הפניה לפגישה עם עו״ד פודים או לשיחת ייעוץ כדי לקבל מחיר נכון ומותאם אישית. ' +
+        'אל תצמצם את הטווח, אל תאמר איפה בטווח הוא צפוי להיות, אל תחלק לפי נפש, ' +
+        'ואל תתחייב מה כלול או לא כלול — את זה מפרט עו״ד פודים.' + PHONE_RIDER,
+      fallbackText: meetingReady
+        ? `${closing.priceRangeAnswer(profile)}\n\n${closing.SLOTS_TOKEN}`
+        : `${closing.priceRangeAnswer(profile)}\n\n${closing.withPhoneAsk(closing.callClose(profile, { variant: 'ask_phone', phoneOnly: true }), profile)}`,
+      offerMeeting: meetingReady,
+      priceRange: true,
+      escalate: false,
     };
   }
 
@@ -512,5 +538,8 @@ function decide({ analysis, profile, text, recentClose = false }) {
   };
 }
 
+const PRICE_ASK_RE = /(?:כמה\s+(?:זה\s+|זה\s+בערך\s+|בערך\s+)?(?:עולה|יוצא|יעלה)|טווח|מחיר|עלות|סדר\s+גודל|שכר\s*טרחה)/;
+
 module.exports = {
+  PRICE_ASK_RE,
   normaliseAncestor, ACTIONS, decide };

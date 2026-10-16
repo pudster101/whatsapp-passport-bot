@@ -187,6 +187,25 @@ async function notifyHandoff(profile, reason, opts = {}) {
 }
 
 /**
+ * A question only the lawyer can answer (refunds, payment detail…), forwarded
+ * at the lead's request. Owner, 16 Oct: "the bot must pass the specific
+ * question to me and I will answer directly". The question itself is in the
+ * alert, verbatim, so it can be answered without scrolling the chat.
+ */
+async function notifyQuestion(profile, question) {
+  const text = leadCard(profile, {
+    title: '❓ *שאלה שממתינה לתשובה ממך*',
+    recommendation: `השאלה של הלקוח: «${String(question).trim().slice(0, 600)}»\n` +
+      `ענה לו ישירות בוואטסאפ: wa.me/${String(profile.waPhone || '').replace(/\D/g, '')}`,
+  });
+  return notifyAgents(
+    text,
+    'pudim_handoff',
+    [profile.name || 'לא נאסף', profile.waPhone, profile.clientPhone || '—']
+  );
+}
+
+/**
  * A lead asked for a meeting. This is the most valuable alert the bot sends:
  * someone agreed to give up an evening and come to the office with documents.
  * It needs confirming the same day, or the slot and the intent both go cold.
@@ -228,5 +247,6 @@ module.exports = {
   notifyHotLead,
   notifyHandoff,
   notifyMeetingRequest,
+  notifyQuestion,
   leadCard,
 };

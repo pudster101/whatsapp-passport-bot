@@ -308,6 +308,10 @@ async function compose(analysis, profile, history = [], directive = null) {
       blocked: false,
     };
 
+    // Amounts the LEAD wrote ("משרד אחר אמר 7,500", "10 אלף? 20? 30?") may be
+    // repeated back — quoting the customer is not quoting a fee. On 16 Oct two
+    // replies to שירה were thrown away only for saying "7,500" back to her.
+    leadAmounts = amountsIn(history.filter(h => h.role === 'user').slice(-4).map(h => h.text).join(' ') + ' ' + lastUser);
     let safe = enforceGuardrails(text, profile);
     if (!safe) {
       // One retry, told exactly what was wrong. On 14 Oct about one reply in
@@ -316,6 +320,8 @@ async function compose(analysis, profile, history = [], directive = null) {
       // threw away an otherwise good answer. Fixing the phrase is far better
       // than replacing the whole reply with a leaflet.
       const reason = lastBlockReason || 'guardrail';
+      lastCompose.blockedText = String(text).slice(0, 600);   // for diagnosing false positives
+      let t2 = '';
       console.warn(`🔁 AI reply blocked (${reason}) — asking for one rewrite`);
       try {
         countCall();
@@ -330,7 +336,7 @@ async function compose(analysis, profile, history = [], directive = null) {
             { role: 'user', content: retryNote(reason) },
           ],
         });
-        let t2 = stripScaffold((res2.content || [])
+        t2 = stripScaffold((res2.content || [])
           .filter(b => b.type === 'text').map(b => b.text).join('').trim());
         if (t2 && res2.stop_reason === 'max_tokens') t2 = trimToWholeSentence(t2);
         if (t2) safe = enforceGuardrails(t2, profile);
@@ -341,6 +347,7 @@ async function compose(analysis, profile, history = [], directive = null) {
         console.warn('🛑 Rewrite still blocked — falling back to scripted copy');
         lastCompose.blocked = true;
         lastCompose.blockedBy = lastBlockReason || reason;
+        lastCompose.blockedText2 = String(t2 || '').slice(0, 600);
         lastCompose.usedAI = false;
         return null;
       }
@@ -491,7 +498,7 @@ const COMPARATIVE_FEE = [
   /(?:צד|כיוון|קצה|חלק|אזור|חצי)\s+ה?(?:נמוך|תחתון|זול|גבוה|עליון|יקר)/,
   /נוטה\s+(?:יותר\s+)?(?:ל|אל)(?:כיוון|צד|קצה)/,
   /(?:נוטה|נוטים|מטה|מטים)\s+(?:את\s+)?(?:ה)?(?:תיק|מחיר|עלות)[^.\n]{0,20}(?:לכיוון|לצד)/,
-  /(?:קרוב|קרובה|קרובים)\s+(?:יותר\s+)?ל-?\s?\d/,
+  /(?:קרוב|קרובה|קרובים)\s+(?:יותר\s+)?ל-?\s?\d{1,2}(?:[.,]\d)?(?:\s*אלף|K)?(?!\d)/,   // \"קרוב ל-8\", not \"קרוב ל-1940\"
   /(?:משפיע|משפיעה|דוחף|מוריד|מעלה)\s+(?:את\s+ה(?:מחיר|עלות)\s+)?לכיוון/,
   // "התעריף יהיה הרבה יותר נמוך", "העלות אצלך נמוכה יותר ממה שחשבת" (16 Oct)
   // Whole words only: "העלות תלויה בעיקר…" contains "יקר" inside "בעיקר", and
@@ -785,7 +792,9 @@ const RANGE_REFERRAL = /פגיש|שיחת?\s+(?:ה)?ייעוץ|שיחה\s+קצר
  * לנפש — גם למשפחה של 5 זה אותו סדר גודל" and listed everything "כלול".
  */
 const FEE_SCOPE_CLAIM = [
-  /(?:לתיק\s+כולו|לא\s+לנפש|לא\s+לאדם|לכל\s+המשפחה|למשפחה\s+כולה)(?=$|[\s,.!?—*-])/,
+  /(?:לתיק\s+כולו|לא\s+לנפש|לא\s+לאדם)(?=$|[\s,.!?—*-])/,
+  // Family pricing is the lawyer's: no "not a simple multiplication", no hinted discount (אבי, 16 Oct).
+  /כפל\s+פשוט|לא\s+(?:כפל|מכפילים|מוכפל|פשוט\s+כפול)|חלק\s+מהעבודה\s+משותף|ההנחה\s+(?:על|ל)|(?:יש|קיימת|נותנים)\s+הנחה|הנחה\s+(?:למשפחה|משפחתית)\s+(?:יש|קיימת)/,
   /(?:הכל|הכול)\s+כלול|(?<!מה\s)(?<!מה\s+בדיוק\s)(?<!אם\s)(?<!ומה\s)כלול(?:ים|ה|ות)?\s+(?:בתיק|במחיר|בשכר|בעלות|מראש)|חלק\s+מהעלות\s+הכוללת|כבר\s+בפנים|תחת\s+קורת\s+גג\s+אחת/,
   /(?:אין|בלי|ללא)\s+(?:הפתעות|תשלומים\s+נוספים|תוספות)/,
 ];
@@ -826,6 +835,29 @@ function invalidCallDay(text) {
   return target === 5 || target === 6;
 }
 
+let leadAmounts = new Set();
+function amountsIn(s) {
+  const out = new Set();
+  const str = String(s || '');
+  const thousands = /אלף|K|k/.test(str);
+  for (const m of str.matchAll(/\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?/g)) {
+    const n = parseFloat(m[0].replace(/,/g, ''));
+    if (!isFinite(n)) continue;
+    out.add(n);
+    if (thousands && n < 1000) out.add(n * 1000);
+  }
+  return out;
+}
+function isLeadEcho(match, text) {
+  if (!leadAmounts.size) return false;
+  const nums = amountsIn(match);
+  if (![...nums].some(n => leadAmounts.has(n) || leadAmounts.has(n * 1000))) return false;
+  // …but never as OUR price.
+  const idx = text.indexOf(match);
+  const sentence = text.slice(Math.max(0, text.lastIndexOf('.', idx) + 1), (text.indexOf('.', idx) + 1) || text.length);
+  return !/אצלנו|אצלי|שלנו|גם\s+אנחנו|דומה|אותו\s+סדר|יעלה\s+לך|יעלה\s+לכם|זה\s+יעלה/.test(sentence);
+}
+
 function enforceGuardrails(text, profile = null) {
   lastBlockReason = null;
   // "היום אחה״צ או מחר בבוקר" written on a Friday: correct the day instead of
@@ -837,6 +869,12 @@ function enforceGuardrails(text, profile = null) {
     }).replace(/(ביום ראשון [^\s?.,]+(?:\s+[^\s?.,]+)?)\s+או\s+ביום ראשון\s+/, '$1 או ');
   }
   const original = text;
+  // "עו״ד פודים עצמו יחזור אליך" to a lead who gave no number (יוסי, 16 Oct).
+  if (profile && !profile.clientPhone &&
+      /(?:עו״ד|עו"ד|עורך\s+הדין)\s+(?:יהונתן\s+)?פודים\s+(?:עצמו\s+)?(?:יחזור|יתקשר|ייצור\s+קשר|יחייג)\s+אלי/.test(text) &&
+      !/(?:מספר|טלפון|נייד)\s*(?:שלך|לחזרה)|לאיזה\s+מספר|מה\s+(?:ה)?מספר|כאן\s+בוואטסאפ|בוואטסאפ|בצ׳אט|כאן/.test(text)) {
+    return block('🛑 Guardrail: promised a callback but the lead gave no number — ask for one, or give the office phone');
+  }
   if (FEE_SCOPE_CLAIM.some(re => re.test(text))) {
     return block('🛑 Guardrail: claimed what the fee covers or whether it is per person — only the lawyer says that');
   }
@@ -892,13 +930,18 @@ function enforceGuardrails(text, profile = null) {
     const m = text.match(re);
     if (m) {
       if (isAllowedFee(m[0])) continue;
+      if (isLeadEcho(m[0], text)) continue;
       return block(`🛑 Guardrail: fee quoted in AI reply → "${m[0]}"`);
     }
   }
   if (anchorsPrice(text)) {
     return block('🛑 Guardrail: reply judges or repeats a price amount');
   }
-  if (COMPARATIVE_FEE.some(re => re.test(text))) {
+  // A sentence that REFUSES to position the lead ("אני לא יכול לומר אם זה
+  // בקצה התחתון") is the right answer, not a leak — it only quotes the lead.
+  const NEGATED = /(?:לא\s+(?:יכול|אוכל|אדע|אגיד|אומר|נכון\s+לומר)|אין\s+לי\s+(?:דרך|אפשרות)|אי\s+אפשר)/;
+  const sentencesForFee = String(text).split(/(?<=[.!?])\s+|\n+/).filter(s => !NEGATED.test(s));
+  if (COMPARATIVE_FEE.some(re => sentencesForFee.some(s => re.test(s)))) {
     return block('🛑 Guardrail: comparative fee claim');
   }
   for (const re of PROMISE_PATTERNS) {
@@ -1004,6 +1047,7 @@ async function updateSummary(profile, history) {
 
 module.exports = {
   _setClock,
+  _setLeadAmounts: (txt) => { leadAmounts = amountsIn(txt); },
   init,
   isAvailable,
   analyse,

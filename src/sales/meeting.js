@@ -155,6 +155,13 @@ function signalsMeetingInterest(text) {
   return AGREES.test(t) || NAMES_A_TIME.test(t);
 }
 
+// "Not now" is not "never", but it is "stop offering" (16 Oct 20:2x: רותם, שירה,
+// רון, מיכל, אלכס all said some version of this and got the slots again).
+const DEFERS_MEETING = /(?:לא\s+(?:רוצה|מוכן|מוכנה|בא|באה|אבוא|אגיע|מתכוון|מתכוונת)\s+(?:ל)?(?:להגיע|לנסוע|לבוא|לשבת|פגישה|לפגישה|לתל\s*אביב))|(?:לא\s+(?:בא|באה)\s+לפגישה)|(?:לפני\s+ש(?:אני\s+)?(?:קובע|קובעת|נקבע|מגיע|מגיעה))|(?:עדיין\s+לא\s+שם)|(?:דוחף|דוחפים)\s+אותי\s+ל(?:פגישה|שיחה)|(?:לא\s+בטוח|לא\s+בטוחה)\s+ש(?:אני\s+)?(?:רוצה|מוכן|מוכנה)\s+(?:להגיע|לבוא|לשבת|לפגישה)|(?:בלי\s+פגישה)|(?:אין\s+טעם\s+בפגישה)|(?:ואז\s+נראה\s+אם)/;
+function signalsMeetingDeferral(text) {
+  return DEFERS_MEETING.test(String(text || ''));
+}
+
 function signalsMeetingRefusal(text) {
   return DECLINES_MEETING.test(String(text || ''));
 }
@@ -368,6 +375,8 @@ function isReadyForMeeting(profile = {}) {
   const m = profile.meeting || {};
   if (m.status === 'requested' || m.status === 'confirmed') return false;
   if ((m.declines || 0) >= 1) return false;          // asked once, said no — let it go
+  // "Not before I know the price" — no more slots for three turns.
+  if (profile.meetingDeferUntil && (profile.messageCount || 0) <= profile.meetingDeferUntil) return false;
   return true;
 }
 
@@ -386,7 +395,7 @@ module.exports = {
   OFFICE, MAPS_URL, WAZE_URL,
   MEETING_DAYS, MEETING_HOURS, MEETING_MINUTES, WHAT_TO_BRING,
   nextSlots, takenSlots, slotLabel,
-  signalsMeetingInterest, signalsMeetingRefusal, signalsCannotCome, parseSlotChoice, parseExplicitSlotChoice,
+  signalsMeetingInterest, signalsMeetingRefusal, signalsMeetingDeferral, signalsCannotCome, parseSlotChoice, parseExplicitSlotChoice,
   offerText, slotPrompt, pendingText, confirmedText, reminderText, bringList,
   isReadyForMeeting,
 };

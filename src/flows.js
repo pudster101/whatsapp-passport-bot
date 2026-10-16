@@ -250,6 +250,7 @@ function prepareMeetingOffer(phone, session, text) {
 
   if (out.includes(closing.SLOTS_TOKEN)) {
     mtg.closeOffers = (mtg.closeOffers || 0) + 1;
+    mtg.lastOfferTurn = session.profile?.messageCount || 0;
     const mode = mtg.mode === 'video' ? 'video' : 'office';
     const slots = meeting.nextSlots({
       count: 2, taken: meeting.takenSlots(storage.getAllConversations()),
@@ -1191,6 +1192,44 @@ async function handleFreeText(phone, session, text, opts = {}) {
   const closedRecently =
     session.lastCloseTurn !== undefined &&
     ((p.messageCount || 0) - session.lastCloseTurn) < 3;
+  // "לא באה לפגישה בלי לדעת את המחיר" — stop offering the meeting for a while.
+  const refusesMeetingForPhone = meeting.signalsMeetingRefusal(text);   // "עדיף טלפון"
+  if (meeting.signalsMeetingDeferral(text) || refusesMeetingForPhone) {
+    p.meetingDeferUntil = (p.messageCount || 0) + 3;
+    p.meetingDeferKind = refusesMeetingForPhone ? 'phone' : 'not_yet';
+    storage.logEvent(phone, 'meeting_deferred', { until: p.meetingDeferUntil });
+  }
+
+  // ── A question forwarded to עו״ד פודים ────────────────────────────────────
+  // The bot offered ("אפשר להעביר את השאלה לעו״ד פודים") and the lead said yes,
+  // or the lead asked for it outright. The exact question goes to the lawyer,
+  // and the lead is told so — that is a true statement, because it happened.
+  {
+    const offer = session.lawyerQuestionOffer;
+    const asksToForward = /(?:תעביר|תעבירו|העבר|תשאל)\s+(?:לו|אותו|לעו״ד|לעו"ד|את\s+השאלה|את\s+עו״ד|את\s+עו"ד|את\s+עורך)|תעביר\s+את\s+(?:זה|השאלה)|תשאל\s+(?:אותו|את\s+עו)/.test(text);
+    const agrees = /^(?:כן|בטח|אוקיי|אוקי|סבבה|יאללה|בבקשה|אשמח|תעביר|מעולה|כן\s+בבקשה|כן,)/.test(text.trim());
+    if ((offer && (agrees || asksToForward)) || (!offer && asksToForward)) {
+      const lastQ = (session.history || []).filter(h => h.role === 'user' && /\?/.test(h.text || '')).slice(-1)[0];
+      const question = [offer?.question || lastQ?.text || '', /\?/.test(text) && !agrees ? text : '']
+        .filter(Boolean).join('\n');
+      if (question) {
+        session.lawyerQuestionOffer = null;
+        p.lawyerQuestions = [...(p.lawyerQuestions || []), { at: new Date().toISOString(), question }];
+        storage.logEvent(phone, 'question_forwarded', { question: question.slice(0, 300) });
+        handoff.notifyQuestion(p, question).catch(e => console.warn('⚠️ question notify:', e.message));
+        await reply(phone, session,
+          `העברתי לעו״ד פודים את השאלה שלך:\n«${question.trim().slice(0, 300)}»\n\n` +
+          `הוא ישיב לך ישירות כאן בוואטסאפ. ואם דחוף — *${closing.OFFICE_PHONE}* · א׳–ה׳ 09:00–18:00.`);
+        save(phone, session);
+        return;
+      }
+    }
+  }
+
+  // "קשה לי להגיע לתל אביב… אפשר בזום?" — from now on every offer is a video one
+  // (מיכל, 16 Oct: told "כן, אפשר בזום" and then offered Ashkenazi 21 again).
+  if (meeting.signalsCannotCome(text)) leadProfile.ensureMeeting(p).mode = 'video';
+
   // A refusal to give a number is remembered, so nothing asks again.
   if (!p.clientPhone && closing.signalsContactRefusal(text)) {
     p.contactRefusals = (p.contactRefusals || 0) + 1;
@@ -1243,6 +1282,16 @@ async function handleFreeText(phone, session, text, opts = {}) {
     storage.logEvent(phone, 'meeting_declined', { mode: mtg.mode });
   }
 
+  if (p.meetingDeferUntil && (p.messageCount || 0) <= p.meetingDeferUntil && p.meetingDeferKind !== 'phone') {
+    decision.offerMeeting = false;
+    if (decision.fallbackText) {
+      decision.fallbackText = closing.stripPhoneAsks(String(decision.fallbackText).split(closing.SLOTS_TOKEN).join('')) || decision.fallbackText;
+    }
+    decision.directiveSuffix = (decision.directiveSuffix || '') +
+      ' ⚠️ הלקוח אמר שהוא לא מוכן לפגישה כרגע. אל תציע פגישה, אל תזכיר מועדים ואל תבקש טלפון בהודעה הזו —' +
+      ' ענה על מה ששאל, בקצרה ובמלואו. אם הוא עוזב, השאר את מספר המשרד.';
+  }
+
   // 5. Compose the reply — AI first, scripted fallback
   let replyText = null;
   if (aiWillCompose && !decision.forceFallback) {
@@ -1253,7 +1302,9 @@ async function handleFreeText(phone, session, text, opts = {}) {
   // 84 words per bot message on average across the October trainer runs, and
   // "תשובות ארוכות מדי" in a third of the reports. The model is told 2-5 lines;
   // this makes it true. Whole sentences only, and a closing question survives.
-  if (aiComposed) replyText = capWords(replyText, 60);
+  // The approved price range must keep its caveat and referral, which the
+  // guardrail already checked — never cut those sentences away.
+  if (aiComposed && !/8,000/.test(replyText)) replyText = capWords(replyText, decision.offerMeeting ? 40 : 55);
   // A lead who refused to give a number is never asked for one again.
   // …and nobody is asked for a number in the first two replies, before they
   // got anything from us (דנה, 16 Oct: "מה מספר הטלפון שלך?" in reply #1).
@@ -1361,7 +1412,14 @@ async function handleFreeText(phone, session, text, opts = {}) {
   // not having listened. דנה and מיכל, 16 Oct.
   const alreadySignedOff = aiComposed &&
     /(?:תחזור|תחזרי|תכתוב לי|תכתבי לי|כשתברר|כשתבררי|כשתדע|כשתדעי|בהצלחה|נמשיך משם|תעדכן|תעדכני)/.test(replyText);
-  if (terminalTurn && !alreadySignedOff && !p.notEligible && p.stage !== 'NOT_ELIGIBLE') {
+  // A lead who said "not before I know X" gets no pitch bolted on. If they are
+  // leaving, they get the office number — the one thing they can act on alone.
+  const deferredNow = p.meetingDeferUntil && (p.messageCount || 0) <= p.meetingDeferUntil
+                      && p.meetingDeferKind !== 'phone';
+  if (deferredNow && departing && !replyText.includes(closing.OFFICE_PHONE)) {
+    replyText = `${replyText}\n\nאם תרצה לשאול משהו ישירות — *${closing.OFFICE_PHONE}* · א׳–ה׳ 09:00–18:00.`;
+  }
+  if (terminalTurn && !deferredNow && !alreadySignedOff && !p.notEligible && p.stage !== 'NOT_ELIGIBLE') {
     const before = replyText;
     replyText = closing.ensureCallClose(replyText, p, {
       variant: decision.escalate
@@ -1377,6 +1435,12 @@ async function handleFreeText(phone, session, text, opts = {}) {
   if (closing.hasCallClose(replyText)) session.lastCloseTurn = turn;
 
   if (/8,000\s*(?:₪)?\s*(?:ל-?|עד|[-–])\s*14,000/.test(replyText)) p.priceRangeGiven = true;
+  // Did we just offer to pass a question to the lawyer? Remember which one.
+  if (/(?:להעביר|אעביר|נעביר|לשלוח)\s+(?:את\s+)?(?:ה)?שאלה|שאלה\s+לעו״ד\s+פודים|(?:ישיב|יענה|עונה)[^.\n]{0,40}כאן\s+בוואטסאפ/.test(replyText)) {
+    const lastQ = /\?/.test(text) ? text
+      : ((session.history || []).filter(h => h.role === 'user' && /\?/.test(h.text || '')).slice(-1)[0]?.text || text);
+    session.lawyerQuestionOffer = { question: lastQ, turn: p.messageCount || 0 };
+  }
   await reply(phone, session, replyText);
 
   // 6. Mark objections we just answered as addressed
@@ -1631,7 +1695,7 @@ async function maybeSaveLead(phone, session) {
  * and detects objections.
  */
 const INTENT_PHRASES = [
-  ['request_human',  ['נציג', 'אדם אמיתי', 'לדבר עם מישהו', 'לדבר עם עורך', 'עורך דין אמיתי', 'בן אדם']],
+  ['request_human',  ['נציג', 'אדם אמיתי', 'לדבר עם מישהו', 'לדבר עם עורך', 'עורך דין אמיתי', 'לדבר עם בן אדם', 'עם בן אדם']],
   ['ask_cost',       ['כמה עולה', 'כמה זה עולה', 'כמה יעלה', 'כמה זה', 'מחיר', 'עלות', 'עלויות', 'שכר טרחה', 'כמה כסף', 'תמחור']],
   ['ask_time',       ['כמה זמן', 'לוח זמנים', 'כמה זה לוקח', 'מתי אקבל', 'תוך כמה']],
   ['ask_b1',         ['b1', 'בי1', 'תעודת שפה', 'מבחן שפה', 'בחינת שפה', 'דרישת השפה']],
@@ -2024,20 +2088,25 @@ const CONTACT_ASKS = [
  */
 function capWords(text, max = 60) {
   const t = String(text || '').trim();
-  const count = (s) => s.split(/\s+/).filter(Boolean).length;
+  const count = (x) => x.split(/\s+/).filter(Boolean).length;
   if (count(t) <= max) return t;
-  // Paragraph-aware sentence split; keep the order.
-  const units = t.split(/(?<=[.!?])\s+(?=\S)|\n{2,}/).filter(u => u.trim());
-  const lastQ = [...units].reverse().find(u => /\?\s*\*?$/.test(u.trim()));
-  const out = [];
-  let used = 0;
-  for (const u of units) {
-    const n = count(u);
-    if (used + n > max && out.length) break;
-    out.push(u); used += n;
+  // Cut at a sentence end, keeping the original line breaks exactly — the old
+  // version re-joined every sentence with a blank line and turned one
+  // paragraph into a column of one-liners.
+  const ends = [...t.matchAll(/[.!?](?=\s|$)|\n{2,}/g)].map(m => m.index + m[0].length);
+  let cut = 0;
+  for (const e of ends) {
+    if (count(t.slice(0, e)) > max && cut) break;
+    cut = e;
   }
-  if (lastQ && !out.includes(lastQ) && used + count(lastQ) <= max + 20) out.push(lastQ);
-  return out.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
+  let out = t.slice(0, cut || t.length).trim();
+  // Keep the closing question if it was cut and there is room for it.
+  const units = t.split(/(?<=[.!?])\s+(?=\S)|\n+/).filter(u => u.trim());
+  const lastQ = /\?\s*\*?\s*$/.test(units[units.length - 1] || '') ? units[units.length - 1] : null;
+  if (lastQ && !out.includes(lastQ.trim()) && count(out) + count(lastQ) <= max + 20) {
+    out = `${out}\n\n${lastQ.trim()}`;
+  }
+  return out.replace(/\n{3,}/g, '\n\n').trim();
 }
 
 function trimToWhatsApp(text, budget = 480) {

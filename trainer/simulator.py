@@ -140,7 +140,24 @@ def run_simulation(
             log("lead", message, turn + 1)
 
             if agent.finished:
-                # הסוכן סיים בהודעה האחרונה שלו — הבוט לא צריך לענות עוד
+                # הסוכן סיים בהודעה אחרונה ("אני אחפש פתרון אחר"). בשיחה אמיתית
+                # הבוט עונה גם עליה — ובלי זה המעריך כתב "הבוט לא הגיב לתור האחרון"
+                # (רון, רותם, שירה — 16.10). שולחים אותה פעם אחת ורושמים את התשובה.
+                if (message or "").strip():
+                    try:
+                        t0 = time.time()
+                        last_reply = send_to_my_bot(message, session_id=session_id, dry_run=dry_run)
+                        transcript["messages"].append({
+                            "turn": turn + 1, "role": "bot", "text": last_reply,
+                            "timestamp": _now(), "latency_sec": round(time.time() - t0, 2),
+                            **({"meta": dict(bot_connector.last_reply_meta)}
+                               if bot_connector.last_reply_meta else {}),
+                        })
+                        if verbose:
+                            print(f"\n[{turn + 1}] בוט : {last_reply}")
+                    except Exception as e:
+                        if verbose:
+                            print(f"\n!! שגיאה מהבוט בתשובה האחרונה: {e}")
                 transcript["stop_reason"] = "goal_reached"
                 transcript["turns_completed"] = turn + 1
                 break

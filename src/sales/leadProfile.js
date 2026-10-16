@@ -442,7 +442,11 @@ function summarise(profile) {
   if (e.ancestor) bits.push(`בן משפחה: ${e.ancestor}`);
   if (e.birthYear) bits.push(`שנת לידה: ${e.birthYear}`);
   if (e.birthPlace) bits.push(`מקום: ${e.birthPlace}`);
-  if (e.leftYear) bits.push(`עזב: ${e.leftYear}`);
+  // An approximate year is shown as a decade, so nobody quotes "1935" back to a
+  // lead who said "the 30s or 40s" (יוסי, 16 Oct).
+  if (e.leftYear) bits.push(e.leftYearApprox
+    ? `עזב: בערך בשנות ה-${String(e.leftYear).slice(2, 3)}0 (הלקוח לא בטוח — אל תציין שנה מדויקת)`
+    : `עזב: ${e.leftYear}`);
   if (e.territory) bits.push(`אזור: ${e.territory}`);
   if (e.likelyArticle) bits.push(`מסלול משוער: סעיף ${e.likelyArticle}`);
   const groupDesc = describeGroup(e);

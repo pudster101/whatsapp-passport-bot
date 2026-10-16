@@ -85,7 +85,7 @@ function decide({ analysis, profile, text, recentClose = false }) {
   // "we just closed, don't nag" rule silenced the ask at the warmest moment.
   const noNumber = closing.needsPhoneAsk(profile);
   const PRICE_OBJECTIONS = ['need_price_first', 'price_too_high', 'cheaper_competitor'];
-  const PRICE_ASK = /(?:כמה\s+(?:זה\s+|זה\s+בערך\s+|בערך\s+|זה\s+בסוף\s+)?(?:עולה|יוצא|יצא|ייצא|יעלה)|טווח|מחיר|עלות|סדר\s+גודל|שכר\s*טרחה)/;
+  const PRICE_ASK = /(?:כמה\s+(?:בערך\s+)?(?:זה\s+)?(?:בערך\s+|בסוף\s+)?(?:עולה|יוצא|יצא|ייצא|יעלה)|טווח|מחיר|עלות|סדר\s+גודל|שכר\s*טרחה)/;
 
   // Is this case ready for the office meeting? Then every close below points
   // there, and a phone call is the fallback — not the other way round.
@@ -93,7 +93,10 @@ function decide({ analysis, profile, text, recentClose = false }) {
   // got a meeting with two evenings in the bot's very first message.
   const meetingReady = meeting.isReadyForMeeting(profile)
     && ((profile.meeting || {}).closeOffers || 0) < 2
-    && (profile.messageCount || 0) >= 2;
+    && (profile.messageCount || 0) >= 2
+    // Offered and ignored is not a reason to offer the same two slots again
+    // next turn — four of eight trainer leads got them verbatim twice (16 Oct).
+    && ((profile.messageCount || 0) - ((profile.meeting || {}).lastOfferTurn ?? -99)) >= 3;
   const askingPrice = objections.detect(text).some(o => PRICE_OBJECTIONS.includes(o));
   const askingPriceAny = askingPrice || intent === 'ask_cost' || PRICE_ASK.test(text);
   const GOAL =
@@ -108,8 +111,14 @@ function decide({ analysis, profile, text, recentClose = false }) {
       'גם אם כבר סוכם מועד, וגם אם ביקשת בעבר. מועד בלי מספר אינו פגישה.'
     : '';
 
+  // 0. An insisting lead asking the price gets the approved range even when the
+  //    analysis flagged frustration for escalation — the range IS the answer to
+  //    "אתה מתחמק" (יוסי, 16 Oct: asked four times, escalated instead, never got it).
+  const rangeDue = profile.priceRangeAllowed && !profile.priceRangeGiven && askingPriceAny
+                   && intent !== 'request_human';
+
   // 1. Explicit human request or AI escalation — always wins
-  if (intent === 'request_human' || analysis?.escalate) {
+  if (!rangeDue && (intent === 'request_human' || analysis?.escalate)) {
     return {
       action: ACTIONS.ESCALATE_HUMAN,
       reason: analysis?.escalateReason || 'customer requested a human',
@@ -190,7 +199,11 @@ function decide({ analysis, profile, text, recentClose = false }) {
   //     Repeating "אי אפשר לתת מספר" after a range reads as a retreat (רון,
   //     16 Oct). Remind them of the range, say plainly it cannot be narrowed.
   const positionAsk = /קרוב\s+ל|באיזה\s+(?:צד|קצה)|איזה\s+קצה|איפה\s+(?:אני|זה|אנחנו)|לאיזה\s+(?:צד|כיוון)|(?:^|\s)ל?-?\d{1,2}(?:\s*אלף)?\s*(?:או|\?)/.test(text);
-  if (profile.priceRangeGiven && (askingPriceAny || positionAsk)) {
+  // "תודה על הטווח" is not another price question — after the range was given,
+  // the word "טווח" alone does not count (רותם, 16 Oct: her questions about a
+  // paid-or-not first stage and a Zoom meeting got the range again instead).
+  const priceAskAfterRange = askingPrice || /כמה\s+(?:זה\s+)?(?:עולה|יוצא|יעלה)|מחיר|עלות|סדר\s+גודל|שכר\s*טרחה/.test(text);
+  if (profile.priceRangeGiven && (priceAskAfterRange || positionAsk) && !/תודה\s+על\s+הטווח/.test(text)) {
     return {
       action: ACTIONS.HANDLE_OBJECTION,
       reason: 'asks price again after the range',
@@ -561,7 +574,7 @@ function decide({ analysis, profile, text, recentClose = false }) {
   };
 }
 
-const PRICE_ASK_RE = /(?:כמה\s+(?:זה\s+|זה\s+בערך\s+|בערך\s+|זה\s+בסוף\s+)?(?:עולה|יוצא|יצא|ייצא|יעלה)|טווח|מחיר|עלות|סדר\s+גודל|שכר\s*טרחה)/;
+const PRICE_ASK_RE = /(?:כמה\s+(?:בערך\s+)?(?:זה\s+)?(?:בערך\s+|בסוף\s+)?(?:עולה|יוצא|יצא|ייצא|יעלה)|טווח|מחיר|עלות|סדר\s+גודל|שכר\s*טרחה)/;
 
 module.exports = {
   PRICE_ASK_RE,

@@ -2285,6 +2285,16 @@ async function run() {
       brain.enforceGuardrails('העלות תלויה בעיקר בכמה מסמכים כבר יש וכמה בני משפחה בתיק.', {}) !== null);
     check('"ואני לא רוצה לזרוק לך סכום" is not feminine self-talk',
       brain.enforceGuardrails('אין לי מספר לתת לך, ואני לא רוצה לזרוק לך סכום סתמי.', {}) !== null);
+    check('"הטווח הוא לאדם, לא לכל המשפחה" passes', brain.enforceGuardrails('הטווח הוא לכל אדם, לא לכל המשפחה. כל מקרה נבחן לגופו — את המחיר המדויק תקבל בפגישה.', { priceRangeAllowed: true }) !== null);
+    check('"זה לא כפל פשוט" is blocked', brain.enforceGuardrails('זה לא כפל פשוט לפי מספר האנשים.', {}) === null);
+    check('capWords does not keep a fragment after a date', !/^10 ב-17/m.test(flows.capWords(Array.from({length:14},(_, i)=>'משפט מספר '+i+' עם מילים.').join(' ')+' אז ביום שלישי, 20.10 ב-17:00?', 30)));
+    brain._setLeadAmounts('משרד אחר אמר לי 7,500 הכל כלול');
+    check('repeating the lead\'s own "7,500" is not quoting a fee',
+      brain.enforceGuardrails('על ההצעה של 7,500 אני לא יכול להגיב בלי לדעת מה כלול בה.', {}) !== null);
+    check('…but "אצלנו בערך 7,500" still is', brain.enforceGuardrails('אצלנו זה יוצא בערך 7,500.', {}) === null);
+    brain._setLeadAmounts('');
+    check('"כפל פשוט" family pricing hint is blocked', brain.enforceGuardrails('אי אפשר לחשב סכום משפחתי כפל פשוט.', {}) === null);
+    check('the prompt fixes "father\'s father" as grandfather', /"אבא של אבא שלי"/.test(prompts.composeSystem({}, [], [])));
     check('"לתיק כולו" is blocked', brain.enforceGuardrails('הטווח הוא לתיק כולו.', { priceRangeAllowed: true }) === null);
     check('the prompt says per person and what is included', /לאדם/.test(prompts.composeSystem({}, [], [])) && /הכנת תיק הבקשה/.test(prompts.composeSystem({}, [], [])));
 
@@ -2307,6 +2317,79 @@ async function run() {
     check('a long model reply is capped to about 60 words', capped.split(/\s+/).length <= 80, String(capped.split(/\s+/).length));
     check('and keeps its closing question', /מה מתאים לך\?$/.test(capped));
     check('a short reply is untouched', flows.capWords('קצר ולעניין. מה דעתך?', 60) === 'קצר ולעניין. מה דעתך?');
+  }
+
+  section('62. Meeting deferral, callback promise — 16 Oct 20:57');
+  {
+    const meeting = require('../src/sales/meeting');
+    for (const t of ['לא לא אני לא באה לפגישה בלי לדעת בכלל מה המחיר', 'אני לא רוצה להגיע לתל אביב בלי לדעת באיזה טווח',
+                     'אני לא מוכנה לנסוע לתל אביב בלי לדעת', 'רגע, לפני שאני קובעת — כמה זה עולה?', 'רגע רגע, אני עדיין לא שם',
+                     'תענה לי קודם על השאלות ואז נראה אם יש טעם בפגישה'])
+      check(`deferral recognised: "${t.slice(0, 40)}"`, meeting.signalsMeetingDeferral(t));
+    check('"יום שני מתאים לי" is not a deferral', !meeting.signalsMeetingDeferral('יום שני מתאים לי'));
+
+    const ph = newPhone();
+    await say(ph, 'סבתא שלי נולדה בבוקרשט ועזבה ב-1951, יש לי תעודת לידה שלה');
+    await say(ph, 'מה התהליך?');
+    const r = await say(ph, 'אני לא באה לפגישה בלי לדעת מה המחיר. כמה זמן זה לוקח?');
+    check('after "not before I know the price" no slots are offered', !/יש לי פגישה/.test(r), r.slice(-200));
+    check('and the deferral is remembered', profileOf(ph).meetingDeferUntil > 0);
+
+    check('"עו״ד פודים יחזור אליך" with no number is blocked',
+      brain.enforceGuardrails('עו״ד פודים עצמו יחזור אליך עם תשובה על ההחזר.', { eligibility: {} }) === null);
+    check('…but fine with a number in the file',
+      brain.enforceGuardrails('עו״ד פודים עצמו יחזור אליך עם תשובה על ההחזר.', { clientPhone: '0501234567', eligibility: {} }) !== null);
+    check('…and fine when the same message asks for the number',
+      brain.enforceGuardrails('עו״ד פודים יחזור אליך — לאיזה מספר?', { eligibility: {} }) !== null);
+    check('refusing to position the lead inside the range is not a leak',
+      brain.enforceGuardrails('אני לא יכול לומר אם זה בקצה התחתון או העליון — זה תלוי במסמכים.', { priceRangeAllowed: true }) !== null);
+    check('positioning still is', brain.enforceGuardrails('אצלך זה כנראה בקצה התחתון.', { priceRangeAllowed: true }) === null);
+    check('the prompt says minors are exempt from B1', /קטינים \(מתחת ל-18\) \*פטורים\*/.test(prompts.composeSystem({}, [], [])));
+  }
+
+  section('63. Forwarding a question to עו״ד פודים — 16 Oct');
+  {
+    const ph = newPhone();
+    await say(ph, 'סבתא שלי נולדה בבוקרשט ועזבה ב-1951');
+    await say(ph, 'מה קורה אם רומניה דוחה את הבקשה? מקבלים החזר?');
+    const r = await say(ph, 'תעביר לו את השאלה בבקשה');
+    check('the lead is told the question was passed on', /העברתי לעו״ד פודים את השאלה/.test(r), r.slice(0, 120));
+    check('with the question itself quoted', /רומניה דוחה/.test(r));
+    check('and it is recorded on the lead', (profileOf(ph).lawyerQuestions || []).length === 1);
+
+    const ph2 = newPhone();
+    await say(ph2, 'סבתא שלי נולדה בבוקרשט ועזבה ב-1951');
+    await say(ph2, 'מה עם החזר כספי אם נדחים?');
+    storage.getConversation(ph2).lawyerQuestionOffer = { question: 'מה עם החזר כספי אם נדחים?', turn: 2 };
+    const r2 = await say(ph2, 'כן');
+    check('"כן" to the offer forwards it', /העברתי לעו״ד פודים/.test(r2) && /החזר כספי/.test(r2), r2.slice(0, 120));
+    check('"עו״ד פודים ישיב/יחזור אליך כאן בוואטסאפ" passes the guard',
+      brain.enforceGuardrails('עו״ד פודים יחזור אליך כאן בוואטסאפ עם תשובה.', { eligibility: {} }) !== null);
+  }
+
+  section('64. No verbatim repeat of the slots; video when they cannot come — 16 Oct 22:00');
+  {
+    const ph = newPhone();
+    await say(ph, 'סבתא שלי נולדה בבוקרשט ועזבה ב-1951, יש לי תעודת לידה שלה');
+    const a = await say(ph, 'כמה זה עולה בערך?');
+    const b = await say(ph, 'ומה עם הבחינה בשפה?');
+    const c = await say(ph, 'וכמה זמן זה לוקח?');
+    const offers = [a, b, c].filter(x => /יש לי פגישה/.test(x)).length;
+    check('the same slots are not offered on consecutive turns', offers <= 1, String(offers));
+    const v = newPhone();
+    await say(v, 'סבתא שלי נולדה בבוקרשט ועזבה ב-1951, יש לי תעודת לידה שלה');
+    await say(v, 'אני לא יכולה להגיע לתל אביב, אפשר בזום?');
+    check('"אפשר בזום?" switches every later offer to video', profileOf(v).meeting.mode === 'video');
+  }
+
+  section('65. Insisting lead gets the range even when frustrated — 16 Oct 22:35');
+  {
+    const ph = newPhone();
+    await say(ph, 'שלום, אפשר לקבל מידע על דרכון רומני? וגם כמה בערך זה עולה?');
+    const r = await say(ph, 'אתה לא ענית לי על המחיר... אני רוצה לדעת בערך כמה זה עולה לפני שאני מתחיל');
+    check('"כמה בערך זה עולה" counts as a price ask, and the second one opens the range', /8,000 ל-14,000/.test(r), r.slice(0, 120));
+    const intentOf = (t) => flows.ruleBasedAnalysis ? flows.ruleBasedAnalysis(t, {}, {}).intent : null;
+    check('"בן אדם אחד, סבא נולד ברומניה" is not a request for a human', intentOf('בן אדם אחד, סבא נולד ברומניה') !== 'request_human');
   }
 
   section('41. The template catalog matches the code');

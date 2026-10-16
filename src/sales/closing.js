@@ -118,6 +118,7 @@ function callClose(profile = {}, opts = {}) {
   if (!opts.phoneOnly && ['ask_phone', 'ask_time', 'departing'].includes(variant)
       && meeting.isReadyForMeeting(profile)
       && ((profile.meeting || {}).closeOffers || 0) < 2
+      && ((profile.messageCount || 0) - ((profile.meeting || {}).lastOfferTurn ?? -99)) >= 3
       && (profile.messageCount || 0) >= 2) {
     return meetingClose(profile, variant);
   }

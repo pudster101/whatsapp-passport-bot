@@ -2082,7 +2082,7 @@ async function run() {
 
     // Meeting-first close
     const meeting = require('../src/sales/meeting');
-    const ready = { eligibility: { ancestor: 'אבא', birthPlace: 'יאשי', leftYear: '1971' } };
+    const ready = { messageCount: 3, eligibility: { ancestor: 'אבא', birthPlace: 'יאשי', leftYear: '1971' } };
     const close = closing.callClose(ready, {});
     check('a meeting-ready lead is closed on the office meeting, not a call',
       /פגישה של 45 דקות/.test(close) && close.includes(closing.SLOTS_TOKEN));
@@ -2110,6 +2110,42 @@ async function run() {
       profileOf(ron)?.name === 'רון כהן' && profileOf(ron)?.clientPhone === '0521234567');
     check('and the request is confirmed, not re-asked',
       /הבקשה לפגישה/.test(done) && !/מתי נוח/.test(done), done.slice(0, 120));
+  }
+
+  section('58. Trainer run 16 Oct — fixed 16 Oct');
+  {
+    const meeting = require('../src/sales/meeting');
+    const slots = meeting.nextSlots({ count: 2 });
+    check('"תני לי שני מספרים…?" is not a booking for Monday',
+      meeting.parseExplicitSlotChoice('תני לי שני מספרים: אם 1950 כמה, אם 1952 כמה?', slots) === null);
+    check('a message full of questions is not a booking',
+      meeting.parseExplicitSlotChoice('אתה אמרת 03-5517801 נכון? בממוצע כמה זמן? שנה? שנתיים?', slots) === null);
+    check('"רגע, לא אמרתי שאני מגיע ביום שני" is not a booking',
+      meeting.parseExplicitSlotChoice('רגע, לא אמרתי שאני מגיע ביום שני', slots) === null);
+    check('"יום שני" still books Monday', !!meeting.parseExplicitSlotChoice(`יום ${/יום ([^\s,]+)/.exec(slots[1].label)[1]}`, slots));
+    check('"השני" still books the second slot', meeting.parseExplicitSlotChoice('השני', slots) === slots[1]);
+
+    // The placeholder leak: model offer + scripted close in one message
+    const ph = newPhone();
+    await say(ph, 'היי, אבא שלי נולד ביאשי ועזב ב-1971. אני זכאי?');
+    sent.length = 0;
+    const session = storage.getConversation(ph);
+    session.profile.messageCount = 3;
+    const both = `תשובה לעניין.\n\n${closing.SLOTS_TOKEN}\n\n${closing.meetingClose(session.profile)}`;
+    const out = flows.prepareMeetingOffer(ph, session, both);
+    check('the slot placeholder never reaches a customer', !out.includes('{{'), out);
+    check('and one message carries one meeting offer', (out.match(/יש לי פגישה/g) || []).length === 1, out);
+    check('a stray Chinese character is removed',
+      !/不/.test(flows.prepareMeetingOffer(ph, session, '不לגבי השאלה — כן.')));
+
+    check('"עורך דין אחר שדיברתי איתו" is not "we already spoke"',
+      !closing.signalsAlreadySpoke('כל עורך דין אחר שדיברתי איתו נתן לי טווח'));
+    check('while "שוחחנו אתמול" still is', closing.signalsAlreadySpoke('היי. שוחחנו אתמול. הכול בסדר. תודה'));
+
+    const first = newPhone();
+    const firstReply = await say(first, 'היי, סבתא שלי נולדה בבוקרשט ועזבה ב-1952. כמה זה עולה?');
+    check('the first reply answers, it does not book a meeting', !/בשעה 1[78]:00/.test(firstReply), firstReply.slice(-160));
+    check('the prompt forbids inventing a refund policy', /מדיניות החזרים, ביטוח, מספר רישיון/.test(prompts.composeSystem({}, [], [])));
   }
 
   section('41. The template catalog matches the code');

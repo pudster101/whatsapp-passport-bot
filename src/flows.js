@@ -222,9 +222,31 @@ function save(phone, session) {
  * the lead's "כן" on the next turn had nothing to attach to.
  */
 function prepareMeetingOffer(phone, session, text) {
-  let out = String(text || '');
+  // The model once opened a reply with a stray Chinese character ("不לגבי").
+  let out = String(text || '').replace(/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/g, '');
   const p = session.profile || {};
   const mtg = leadProfile.ensureMeeting(p);
+
+  // Never two meeting offers in one message. On 16 Oct the model's own offer
+  // got slots appended AND the terminal close added a second, scripted offer
+  // underneath — whose placeholder was never filled, so four customers saw
+  // "{{MEETING_SLOTS}}". Keep the first offer; drop any later one wholesale.
+  const firstTok = out.indexOf(closing.SLOTS_TOKEN);
+  if (firstTok >= 0 && out.indexOf(closing.SLOTS_TOKEN, firstTok + 1) >= 0) {
+    const paras = out.split(/\n{2,}/);
+    let seen = false;
+    out = paras.filter(pp => {
+      if (!pp.includes(closing.SLOTS_TOKEN)) return true;
+      if (seen) return false;
+      seen = true; return true;
+    }).join('\n\n');
+  }
+  if (out.includes(closing.SLOTS_TOKEN) && /יש לי (?:פגישה|פגישת)/.test(out)) {
+    // Slots are already in the text — the scripted close is a duplicate.
+    out = out.split(/\n{2,}/).filter(pp => !pp.includes(closing.SLOTS_TOKEN)
+      && !/^(?:.{0,40})?הצעד הכי יעיל מכאן הוא \*פגיש/.test(pp)
+      && !/^לא נוח להגיע\? אותה פגישה/.test(pp)).join('\n\n');
+  }
 
   if (out.includes(closing.SLOTS_TOKEN)) {
     mtg.closeOffers = (mtg.closeOffers || 0) + 1;
@@ -240,9 +262,9 @@ function prepareMeetingOffer(phone, session, text) {
       storage.logEvent(phone, 'meeting_offered', {
         at: 'close', mode, slots: slots.map(s => s.iso),
       });
-      out = out.replace(closing.SLOTS_TOKEN, meeting.slotPrompt(slots, mode));
+      out = out.split(closing.SLOTS_TOKEN).join(meeting.slotPrompt(slots, mode));
     } else {
-      out = out.replace(closing.SLOTS_TOKEN, meeting.slotPrompt([], mode));
+      out = out.split(closing.SLOTS_TOKEN).join(meeting.slotPrompt([], mode));
       if (!mtg.status) { mtg.status = 'offered'; mtg.mode = mode; mtg.offeredAt = new Date().toISOString(); }
     }
   } else if (!mtg.status && meeting.mentionsMeetingOffer(out)) {
@@ -1097,7 +1119,7 @@ async function handleFreeText(phone, session, text, opts = {}) {
   //      decision layer turns into a video meeting.
   const mtg = leadProfile.ensureMeeting(p);
   if (mtg.status === 'slots_proposed' && (mtg.offered || []).length) {
-    const picked = meeting.parseSlotChoice(text, mtg.offered);
+    const picked = meeting.parseExplicitSlotChoice(text, mtg.offered);
     if (picked) {
       mtg.status = 'requested';
       mtg.slotIso = picked.iso;
@@ -2125,4 +2147,5 @@ module.exports = {
   stripLeadingGreeting,
   avoidTemplateRepeat,
   avoidRepetition,
+  prepareMeetingOffer,
 };

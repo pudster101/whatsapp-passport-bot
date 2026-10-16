@@ -213,6 +213,42 @@ function parseSlotChoice(text, slots = []) {
   return null;
 }
 
+/**
+ * The strict version, for slots we put on the table without being asked.
+ *
+ * parseSlotChoice() was written for a lead who had just said "yes, let's
+ * book" — any day name in the reply was a choice. Since the close now carries
+ * slots unprompted, that looseness booked meetings nobody agreed to: on 16 Oct
+ * "תני לי שני מספרים: אם 1950 כמה…?" was read as Monday ("שני"), and a long
+ * message full of questions to יוסי was booked too. Both leads snapped.
+ *
+ * So a choice must look like a choice: no question, no "רגע/לא/עצור", a short
+ * message, and an explicit day ("יום שני", "בשני"), a standalone ordinal
+ * ("השני", "הראשון"), or one of the offered hours.
+ */
+const NOT_A_CHOICE = /\?|(?:^|\s)(?:לא|רגע|עצור|עצרי|אבל|למה|כמה)(?=$|[\s,.!])/;
+function parseExplicitSlotChoice(text, slots = []) {
+  const t = String(text || '').trim();
+  if (!slots.length || !t || t.length > 60) return null;
+  if (NOT_A_CHOICE.test(t)) return null;
+  const dayOf = (slot) => /יום ([^\s,]+)/.exec(slot.label)?.[1] || null;
+  for (const slot of slots) {
+    const day = dayOf(slot);
+    if (day && new RegExp(`(?:יום\\s*|(?:^|\\s)ב[-־]?)${day}(?=$|[\\s,.!])`).test(t)) return slot;
+  }
+  if (/(?:^|\s)(?:הראשון|הראשונה|אופציה\s*1|המוקדם|המוקדמת)(?=$|[\s,.!])/.test(t)) return slots[0] || null;
+  if (/(?:^|\s)(?:השני|השנייה|השניה|אופציה\s*2|המאוחר|המאוחרת)(?=$|[\s,.!])/.test(t)) return slots[1] || null;
+  // A bare day name only as the whole message ("שני", "ראשון!").
+  for (const slot of slots) {
+    const day = dayOf(slot);
+    if (day && new RegExp(`^${day}[.!]?$`).test(t)) return slot;
+  }
+  for (const slot of slots) {
+    if (new RegExp(`(?:בשעה\\s*|(?:^|\\s)ב[-־]?)${slot.hour}(?::00)?(?=$|[\\s,.!])`).test(t)) return slot;
+  }
+  return null;
+}
+
 // ─── What the bot says ────────────────────────────────────────────────────────
 
 const WHAT_TO_BRING = [
@@ -350,7 +386,7 @@ module.exports = {
   OFFICE, MAPS_URL, WAZE_URL,
   MEETING_DAYS, MEETING_HOURS, MEETING_MINUTES, WHAT_TO_BRING,
   nextSlots, takenSlots, slotLabel,
-  signalsMeetingInterest, signalsMeetingRefusal, signalsCannotCome, parseSlotChoice,
+  signalsMeetingInterest, signalsMeetingRefusal, signalsCannotCome, parseSlotChoice, parseExplicitSlotChoice,
   offerText, slotPrompt, pendingText, confirmedText, reminderText, bringList,
   isReadyForMeeting,
 };

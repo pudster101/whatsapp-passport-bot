@@ -97,7 +97,8 @@ function callClose(profile = {}, opts = {}) {
   // the phone close do its job.
   if (!opts.phoneOnly && ['ask_phone', 'ask_time', 'departing'].includes(variant)
       && meeting.isReadyForMeeting(profile)
-      && ((profile.meeting || {}).closeOffers || 0) < 2) {
+      && ((profile.meeting || {}).closeOffers || 0) < 2
+      && (profile.messageCount || 0) >= 2) {
     return meetingClose(profile, variant);
   }
 
@@ -199,6 +200,8 @@ function hasCallClose(text) {
   if (!text) return false;
   const t = String(text);
   return (
+    t.includes(SLOTS_TOKEN) ||
+    /יש לי (?:פגישה|פגישת)/.test(t) ||
     t.includes(OFFICE_PHONE) ||
     /מתי נוח/.test(t) ||
     /מה נוח לך יותר/.test(t) ||
@@ -431,6 +434,9 @@ const ALREADY_SPOKE = [
 function signalsAlreadySpoke(text) {
   const t = String(text || '');
   if (signalsMissedCallback(t)) return false;     // "עדיין לא דיברנו" is the opposite
+  // "כל עורך דין אחר שדיברתי איתו" (דנה, 16 Oct) is about OTHER firms — she
+  // was told "רשמתי שכבר דיברתם" and the conversation went sideways.
+  if (/(?:אחר|אחרים|אחרת|אחרות|במשרד|משרדים|עורכי\s+דין)[^.?!\n]{0,25}(?:שדיברתי|דיברתי|שוחחתי)|(?:שדיברתי|דיברתי|שוחחתי)[^.?!\n]{0,25}(?:אחר|אחרים|משרד|עורך\s+דין|עורכי\s+דין)/.test(t)) return false;
   return ALREADY_SPOKE.some(re => re.test(t));
 }
 

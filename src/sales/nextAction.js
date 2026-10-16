@@ -84,18 +84,22 @@ function decide({ analysis, profile, text, recentClose = false }) {
   // mid-September picked a time and were never asked for a number, because the
   // "we just closed, don't nag" rule silenced the ask at the warmest moment.
   const noNumber = closing.needsPhoneAsk(profile);
+  const PRICE_OBJECTIONS = ['need_price_first', 'price_too_high', 'cheaper_competitor'];
+
   // Is this case ready for the office meeting? Then every close below points
   // there, and a phone call is the fallback — not the other way round.
+  // Not in the first reply: answer what was asked first. On 16 Oct four leads
+  // got a meeting with two evenings in the bot's very first message.
   const meetingReady = meeting.isReadyForMeeting(profile)
-    && ((profile.meeting || {}).closeOffers || 0) < 2;
+    && ((profile.meeting || {}).closeOffers || 0) < 2
+    && (profile.messageCount || 0) >= 2;
+  const askingPrice = objections.detect(text).some(o => PRICE_OBJECTIONS.includes(o));
   const GOAL =
     meetingReady
       ? 'הצע *פגישה של 45 דקות במשרד עם עו״ד פודים* (אשכנזי 21, תל אביב), ללא עלות וללא התחייבות; ' +
         'מי שלא יכול להגיע — אותה פגישה בזום; ורק מי שלא רוצה פגישה בכלל — שיחת טלפון. ' +
         'אל תציין ימים או שעות בעצמך — המערכת מוסיפה את המועדים הפנויים האמיתיים.'
       : 'הצע שיחה קצרה עם עו״ד פודים עצמו — ללא עלות וללא התחייבות — עם שתי אפשרויות זמן קונקרטיות.';
-
-  const PRICE_OBJECTIONS = ['need_price_first', 'price_too_high', 'cheaper_competitor'];
 
   const PHONE_RIDER = noNumber
     ? ' ⚠️ אין מספר טלפון בתיק. סיים את ההודעה בבקשה מפורשת למספר טלפון — ' +
@@ -193,17 +197,17 @@ function decide({ analysis, profile, text, recentClose = false }) {
           `אל תציע לתאם שיחה בתשובה הזו — הוא עדיין באמצע בירור.`
         : `הלקוח העלה התנגדות מסוג "${objections.label(primary)}". ` +
           `הכר בה, הבן את השורש, וענה ספציפית. אל תתווכח ואל תלחץ.`,
-      ...((PRICE_OBJECTIONS.includes(primary) && meetingReady && !recentClose) ? {
+      ...((askingPrice && meetingReady && !recentClose) ? {
         directiveSuffix:
           ' בסוף ההודעה המערכת תוסיף שתי אפשרויות אמיתיות לפגישה במשרד (שם נותנים את המספר) — ' +
           'אל תוסיף הצעה, מועד או שאלת סגירה משלך.',
       } : {}),
-      fallbackText: (PRICE_OBJECTIONS.includes(primary) && meetingReady && !recentClose)
+      fallbackText: (askingPrice && meetingReady && !recentClose)
         ? `${closing.stripTrailingAsk(objections.respond(primary))}\n\n${closing.meetingClose(profile)}`
         : objections.respond(primary),
       // "How much?" from a lead whose case is clear is the natural moment for
       // the meeting: that is exactly where the number is given.
-      offerMeeting: PRICE_OBJECTIONS.includes(primary) && meetingReady && !recentClose,
+      offerMeeting: askingPrice && meetingReady && !recentClose,
       escalate: false,
       closeToCall: true,
     };
@@ -364,7 +368,7 @@ function decide({ analysis, profile, text, recentClose = false }) {
     // Not offered yet, and the route is finally clear enough to be worth an
     // evening. isReadyForMeeting is stricter than isQualified on purpose:
     // relative, place AND year of departure.
-    if (!mtg.status && meeting.isReadyForMeeting(profile)) {
+    if (!mtg.status && meeting.isReadyForMeeting(profile) && (profile.messageCount || 0) >= 2) {
       const mode = meeting.signalsCannotCome(text) ? 'video' : 'office';
       return {
         action: ACTIONS.OFFER_MEETING,

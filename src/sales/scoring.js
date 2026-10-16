@@ -24,8 +24,14 @@ const BANDS = [
  */
 function hasPhrase(text, phrase) {
   const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // "פגישה" should also find "פגישות".
+  const stem = /[\u0590-\u05FF]ה$/.test(phrase) ? `${escaped.slice(0, -1)}(?:ה|ות|ת)` : escaped;
   // Optional Hebrew prefix letters, then the phrase, then a non-letter boundary
-  const re = new RegExp(`(^|[\\s,.:;!?"'״׳()\\-])[הובלמשכ]{0,2}${escaped}`, 'i');
+  // The trailing boundary was described here but never written: "לבד" matched
+  // "לבדוק", so דנה asking whether to "לבדוק השקעות במקביל" got the do-it-
+  // yourself objection script (16 Oct); "מהר" matched "מהרגע", "תור" "תורגם".
+  // A short Hebrew suffix (plural / feminine / possessive) is still allowed.
+  const re = new RegExp(`(^|[\\s,.:;!?"'״׳()\\-])[הובלמשכ]{0,2}${stem}(?:ים|ות|ה|ת|י|ך|ו)?(?=$|[^\\u0590-\\u05FFa-z0-9])`, 'i');
   return re.test(text);
 }
 

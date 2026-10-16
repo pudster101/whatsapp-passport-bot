@@ -66,7 +66,13 @@ module.exports = {
   // Without a key the bot runs in scripted mode exactly as before.
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
   AI_MODEL_FAST: process.env.AI_MODEL_FAST || 'claude-haiku-4-5-20251001',
-  AI_MODEL_SMART: process.env.AI_MODEL_SMART || 'claude-sonnet-5',
+  AI_MODEL_SMART: process.env.AI_MODEL_SMART || 'claude-sonnet-5-5',
+  // Which model writes the customer-facing replies. 'smart' (default) or 'auto'
+  // (the old split: Haiku unless the turn is high-stakes). The October trainer
+  // runs showed the fast model ignoring the long rulebook — feminine self-talk,
+  // positioning leads inside the price range, route claims. Reply volume on
+  // WhatsApp is small; every reply is a sales conversation with a lawyer's name on it.
+  AI_COMPOSE: process.env.AI_COMPOSE || 'smart',
   // 'off'    – no AI at all (scripted bot)
   // 'shadow' – AI analyses every message and logs its judgement, but replies stay scripted
   // 'live'   – AI composes replies for free-text turns (menus stay deterministic)

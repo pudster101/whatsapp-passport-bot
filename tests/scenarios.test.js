@@ -2268,6 +2268,38 @@ async function run() {
     check('"כמה זה בסוף עולה בסך הכל" is not answered with the B1 fee', !/B1/.test(x), x.slice(0, 160));
   }
 
+  section('61. Per-person price, contact refusals, WhatsApp length — 16 Oct');
+  {
+    const ans = closing.priceRangeAnswer({});
+    check('the range is per person', /8,000 ל-14,000 ₪ לאדם/.test(ans));
+    check('and says what it includes', /תרגומי המסמכים/.test(ans) && /הכנת תיק הבקשה/.test(ans) && /הגשתו לרשויות/.test(ans));
+    check('the scripted answer passes its own guardrail', brain.enforceGuardrails(ans, { priceRangeAllowed: true }) === ans);
+    check('"לאדם" from the model passes',
+      brain.enforceGuardrails('הטווח הוא 8,000 עד 14,000 ₪ לאדם, כולל תרגומים, הכנת התיק והגשתו. כל מקרה נבחן לגופו — את המחיר המדויק תקבלי בפגישה.', { priceRangeAllowed: true }) !== null);
+    check('"לתיק כולו" is blocked', brain.enforceGuardrails('הטווח הוא לתיק כולו.', { priceRangeAllowed: true }) === null);
+    check('the prompt says per person and what is included', /לאדם/.test(prompts.composeSystem({}, [], [])) && /הכנת תיק הבקשה/.test(prompts.composeSystem({}, [], [])));
+
+    for (const t of ['אני לא נותן מספר טלפון ולא קובע שיחה', 'אני לא נותנת טלפון לפני שיש לי תשובות',
+                     'אני לא ממלא פרטים לפני שיש לי מושג', 'לא צריך שהוא יתקשר, אני אתקשר אם אחליט', 'אין לי זמן לשיחות'])
+      check(`refusal recognised: "${t}"`, closing.signalsContactRefusal(t));
+    check('"אשמח שתתקשרו" is not a refusal', !closing.signalsContactRefusal('אשמח שתתקשרו אליי מחר'));
+    const st = closing.stripPhoneAsks('הבנתי את החשש. את תנאי ההחזר מפרט עו״ד פודים. מה מספר הטלפון שלך?');
+    check('a phone ask is stripped for a lead who refused', !/מספר הטלפון/.test(st) && /תנאי ההחזר/.test(st), st);
+
+    const ref = newPhone();
+    await say(ref, 'סבתא שלי נולדה בבוקרשט ועזבה ב-1951');
+    await say(ref, 'אני לא נותנת טלפון לפני שיש לי תשובות');
+    check('the refusal is counted', profileOf(ref).contactRefusals === 1);
+    const after = await say(ref, 'כמה זמן לוקח כל התהליך?');
+    check('and the next reply does not ask for a number', !/(?:מספר|טלפון)\s*(?:שלך|לחזרה)|לאיזה מספר|תשאיר/.test(after), after.slice(-160));
+
+    const long = Array.from({ length: 12 }, (_, i) => `זה משפט מספר ${i + 1} עם כמה מילים בתוכו.`).join(' ') + ' מה מתאים לך?';
+    const capped = flows.capWords(long, 60);
+    check('a long model reply is capped to about 60 words', capped.split(/\s+/).length <= 80, String(capped.split(/\s+/).length));
+    check('and keeps its closing question', /מה מתאים לך\?$/.test(capped));
+    check('a short reply is untouched', flows.capWords('קצר ולעניין. מה דעתך?', 60) === 'קצר ולעניין. מה דעתך?');
+  }
+
   section('41. The template catalog matches the code');
   {
     const fs = require('fs');

@@ -90,15 +90,14 @@ function meetingClose(profile = {}, variant = 'ask_phone') {
 function priceRangeAnswer(profile = {}) {
   const name = profile.name ? `${profile.name}, ` : '';
   return `${name}מבין שחשוב לך סדר גודל לפני שמשקיעים זמן. 🙂\n\n` +
-         `טווח המחירים שלנו נע בין *8,000 ל-14,000 ₪*. ` +
-         `חשוב לי להדגיש: כל מקרה נבחן לגופו, והמחיר תלוי בתיק עצמו — אילו מסמכים כבר קיימים, ` +
-         `מה צריך לאתר וכמה בני משפחה נכנסים לתיק.\n\n` +
+         `טווח המחירים שלנו נע בין *8,000 ל-14,000 ₪ לאדם*, והוא כולל את תרגומי המסמכים, הכנת תיק הבקשה והגשתו לרשויות הרלוונטיות. ` +
+         `חשוב לי להדגיש: כל מקרה נבחן לגופו, והמחיר תלוי בתיק עצמו — למשל אילו מסמכים כבר קיימים ומה צריך לאתר.\n\n` +
          `כדי לקבל מחיר נכון ומותאם אישית — פגישה עם עו״ד פודים או שיחת ייעוץ קצרה, ללא עלות וללא התחייבות.`;
 }
 
 /** After the range was given: remind, don't retreat to "אי אפשר לתת מספר". */
 function priceRangeReminder(profile = {}) {
-  return `כמו שכתבתי — הטווח הכללי הוא *8,000 ל-14,000 ₪*, וכל מקרה נבחן לגופו. ` +
+  return `כמו שכתבתי — הטווח הכללי הוא *8,000 ל-14,000 ₪ לאדם* (כולל תרגומים, הכנת התיק והגשתו), וכל מקרה נבחן לגופו. ` +
          `לצמצם אותו או לומר איפה בתוכו המקרה שלך אני לא יכול — זה תלוי במסמכים עצמם, ` +
          `ואת המחיר המדויק נותן עו״ד פודים אחרי שהוא רואה אותם, בפגישה או בשיחת ייעוץ קצרה, ללא עלות.`;
 }
@@ -318,10 +317,22 @@ const REFUSAL = [
   'לא אשאיר טלפון', 'לא רוצה לתת טלפון', 'מעדיף לא להשאיר',
   'מעדיפה לא להשאיר', 'לא נותן טלפון', 'לא נותנת טלפון',
 ];
+// What leads actually wrote in the trainer (Oct): "אני לא נותן מספר טלפון",
+// "לא נותנת טלפון לפני שיש לי תשובות", "אני לא ממלא פרטים", "לא צריך שהוא
+// יתקשר", "אין לי זמן לשיחות". The fixed phrase list caught none of them, and
+// contactRefusals was never counted — so דנה was asked for her number 5 times.
+const REFUSAL_RE = /לא\s+(?:נותן|נותנת|אתן|אמסור|מוסר|מוסרת|ממלא|ממלאה|משאיר|משאירה|רוצה\s+(?:לתת|להשאיר|למסור))\s+(?:לך\s+)?(?:את\s+)?(?:ה)?(?:מספר|טלפון|פרטים|נייד)|(?:בלי|לפני)\s+(?:לתת|שאתן|שאני\s+נותן|שאני\s+נותנת)\s+(?:מספר|טלפון|פרטים)|לא\s+צריך\s+(?:שהוא|שתתקשרו|שיתקשר)|אין\s+לי\s+זמן\s+ל(?:שיחות|שיחה|פגישות)|לא\s+(?:רוצה|מעוניין|מעוניינת)\s+(?:ב)?(?:שיחה|שיחות|פגישה)|אני\s+אתקשר\s+(?:אם|כש)/;
 function signalsContactRefusal(text) {
   if (!text) return false;
   const t = String(text).replace(/[״"׳'.,!?]/g, '');
-  return REFUSAL.some(p => t.includes(p));
+  return REFUSAL.some(p => t.includes(p)) || REFUSAL_RE.test(t);
+}
+
+/** Remove sentences asking for a phone number — for leads who refused. */
+function stripPhoneAsks(text) {
+  const parts = String(text || '').split(/(?<=[.!?])\s+|\n+/);
+  const kept = parts.filter(s => !(ASKS_FOR_PHONE.test(s) || /(?:תשאיר|תשאירי|השאר|השאירי)\s+(?:לי\s+)?(?:מספר|פרטים)|לאיזה\s+מספר|מה\s+(?:ה)?מספר\s+שלך/.test(s)));
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 function signalsNoPush(text) {
@@ -494,6 +505,7 @@ module.exports = {
   signalsAlreadySpoke,
   signalsNoPush,
   signalsContactRefusal,
+  stripPhoneAsks,
   softNudge,
   timeOptions,
 };

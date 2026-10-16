@@ -55,7 +55,9 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="בדיקת צנרת בלי קריאות API")
     ap.add_argument("--no-eval", action="store_true", help="להריץ סימולציה בלי הערכה")
     ap.add_argument("--quiet", action="store_true", help="בלי הדפסת השיחה בזמן אמת")
-    ap.add_argument("--seed", type=int, help="סיד לשחזור הרצה")
+    ap.add_argument("--seed", type=int, default=2026,
+                    help="סיד לשחזור הרצה (ברירת מחדל 2026 — אותן וריאציות בכל סבב, כדי שאפשר יהיה להשוות)")
+    ap.add_argument("--fresh", action="store_true", help="וריאציות אקראיות חדשות (בלי סיד קבוע)")
     ap.add_argument("--out", help="תיקיית פלט (ברירת מחדל: runs/)")
     ap.add_argument("--list", action="store_true", help="הצגת רשימת הפרסונות")
     ap.add_argument("--evaluate-only", help="להעריך תמליל קיים בלי להריץ סימולציה")
@@ -149,7 +151,7 @@ def main() -> int:
                 persona_id=pid,
                 max_turns=args.turns,
                 dry_run=args.dry_run,
-                seed=args.seed,
+                seed=None if args.fresh else (args.seed + i),
                 verbose=verbose,
                 out_dir=out_dir,
             )

@@ -1187,6 +1187,12 @@ async function handleFreeText(phone, session, text, opts = {}) {
   const closedRecently =
     session.lastCloseTurn !== undefined &&
     ((p.messageCount || 0) - session.lastCloseTurn) < 3;
+  // A refusal to give a number is remembered, so nothing asks again.
+  if (!p.clientPhone && closing.signalsContactRefusal(text)) {
+    p.contactRefusals = (p.contactRefusals || 0) + 1;
+    storage.logEvent(phone, 'contact_refused', { n: p.contactRefusals });
+  }
+
   // How many times has this lead asked for a price? The second ask opens the
   // approved range (owner's decision, 16 Oct).
   if (nextAction.PRICE_ASK_RE.test(text) || objections.detect(text).some(o =>
@@ -1240,6 +1246,17 @@ async function handleFreeText(phone, session, text, opts = {}) {
       (decision.directive || '') + (decision.directiveSuffix || ''));
   }
   const aiComposed = !!replyText;
+  // 84 words per bot message on average across the October trainer runs, and
+  // "תשובות ארוכות מדי" in a third of the reports. The model is told 2-5 lines;
+  // this makes it true. Whole sentences only, and a closing question survives.
+  if (aiComposed) replyText = capWords(replyText, 60);
+  // A lead who refused to give a number is never asked for one again.
+  // …and nobody is asked for a number in the first two replies, before they
+  // got anything from us (דנה, 16 Oct: "מה מספר הטלפון שלך?" in reply #1).
+  if (aiComposed && (p.contactRefusals > 0 || (p.messageCount || 0) < 3) && !p.clientPhone) {
+    const stripped = closing.stripPhoneAsks(replyText);
+    if (stripped) replyText = stripped;
+  }
   if (!replyText) {
     // Actions with purpose-built copy (escalation, asking for contact details,
     // closing, objection playbooks) must keep it. Only informational turns
@@ -2001,6 +2018,24 @@ const CONTACT_ASKS = [
  * ever ending mid-sentence. Whole lines only, and the result must end on a
  * sentence, a bullet, or a closing mark.
  */
+function capWords(text, max = 60) {
+  const t = String(text || '').trim();
+  const count = (s) => s.split(/\s+/).filter(Boolean).length;
+  if (count(t) <= max) return t;
+  // Paragraph-aware sentence split; keep the order.
+  const units = t.split(/(?<=[.!?])\s+(?=\S)|\n{2,}/).filter(u => u.trim());
+  const lastQ = [...units].reverse().find(u => /\?\s*\*?$/.test(u.trim()));
+  const out = [];
+  let used = 0;
+  for (const u of units) {
+    const n = count(u);
+    if (used + n > max && out.length) break;
+    out.push(u); used += n;
+  }
+  if (lastQ && !out.includes(lastQ) && used + count(lastQ) <= max + 20) out.push(lastQ);
+  return out.join('\n\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 function trimToWhatsApp(text, budget = 480) {
   const lines = String(text).split('\n');
   const out = [];
@@ -2176,6 +2211,7 @@ module.exports = {
   ruleBasedAnalysis,
   maybeSaveLead,
   trimToWhatsApp,
+  capWords,
   stripLeadingGreeting,
   avoidTemplateRepeat,
   avoidRepetition,

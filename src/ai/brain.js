@@ -394,6 +394,7 @@ function diagnose(msg = '') {
  * Everything else gets the fast model — on WhatsApp, speed is quality.
  */
 function pickModel(analysis) {
+  if (config.AI_COMPOSE !== 'auto') return config.AI_MODEL_SMART;
   const highStakes =
     analysis.objections.length > 0 ||
     analysis.stage === 'OBJECTION' ||
@@ -759,7 +760,7 @@ const RANGE_REFERRAL = /פגיש|שיחת?\s+(?:ה)?ייעוץ|שיחה\s+קצר
  * לנפש — גם למשפחה של 5 זה אותו סדר גודל" and listed everything "כלול".
  */
 const FEE_SCOPE_CLAIM = [
-  /(?:לתיק\s+כולו|לא\s+לנפש|לכל\s+המשפחה|לכל\s+נפש|פר\s+נפש|לנפש)(?=$|[\s,.!?—-])/,
+  /(?:לתיק\s+כולו|לא\s+לנפש|לא\s+לאדם|לכל\s+המשפחה|למשפחה\s+כולה)(?=$|[\s,.!?—*-])/,
   /(?:הכל|הכול)\s+כלול|כלול(?:ים|ה|ות)?\s+(?:בתיק|במחיר|בשכר|בעלות|מראש)|חלק\s+מהעלות\s+הכוללת|כבר\s+בפנים|תחת\s+קורת\s+גג\s+אחת/,
   /(?:אין|בלי|ללא)\s+(?:הפתעות|תשלומים\s+נוספים|תוספות)/,
 ];

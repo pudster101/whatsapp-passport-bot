@@ -2210,7 +2210,8 @@ async function run() {
     const sys = prompts.composeSystem({}, [], []);
     check('the prompt carries the approved range and its conditions',
       /8,000 ל-14,000/.test(sys) && /נבחן לגופו/.test(sys));
-    check('the prompt forbids inventing payment terms', /תנאי תשלום/.test(sys));
+    check('the prompt carries the payment terms', /בהתאם להתקדמות התהליך/.test(sys));
+    check('and still forbids inventing a refund policy or deposit', /לא סכום מקדמה/.test(sys) && /מדיניות החזר/.test(sys));
     check('the prompt explains generation counting', /הילדים שלכם הם \*נינים\*/.test(sys));
 
     const flowsSrc = require('fs').readFileSync(path.join(__dirname, '..', 'src', 'flows.js'), 'utf8');

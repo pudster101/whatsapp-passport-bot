@@ -107,7 +107,7 @@ class TrainerAgent:
         raw = self.llm.complete(
             system=self.system,
             messages=self.history,
-            max_tokens=400,
+            max_tokens=800,
             temperature=self.temperature,
         )
         self.history.append({"role": "assistant", "content": raw})

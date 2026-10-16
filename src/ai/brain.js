@@ -113,7 +113,9 @@ async function analyse(text, profile, history = []) {
     countCall();
     const res = await client.messages.create({
       model: config.AI_MODEL_FAST,
-      max_tokens: 900,
+      // 900 cut the JSON off on long, multi-question messages; an unparseable
+      // analysis fell back to the rules at confidence 0.3.
+      max_tokens: 1600,
       system: prompts.analysisSystem(),
       messages: [{
         role: 'user',
@@ -253,19 +255,28 @@ async function compose(analysis, profile, history = [], directive = null) {
 
     countCall();
     const res = await client.messages.create({
+      ...noThinking(pickModel(analysis)),
       model: pickModel(analysis),
       // WhatsApp replies should be short, and a small cap nudges the model
       // that way — but 450 was cutting real answers off mid-sentence. קרן
       // שרייבר was told "מכאן שלושה מסלולים:" and the list never arrived;
       // אפרים got "יש לך דרך לברר את השנה הזו מהמסמ". Brevity is the prompt's
       // job (see VOICE); the cap is only there to stop a runaway.
-      max_tokens: 700,
+      max_tokens: 1500,
       system: systemPrompt,
       messages: [{ role: 'user', content: userContent }],
     });
 
     let text = (res.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim();
-    if (!text) return null;
+    // Every null from here on is recorded: a silent null used to look, in the
+    // trainer, exactly like "the bot chose a script".
+    const giveUp = (why) => {
+      console.warn(`⚠️  AI compose produced nothing usable: ${why}`);
+      lastCompose = { usedAI: false, error: why, ms: Date.now() - startedAt,
+        outputTokens: res.usage?.output_tokens || 0, stop: res.stop_reason };
+      return null;
+    };
+    if (!text) return giveUp(`empty reply (stop=${res.stop_reason}, blocks=${(res.content || []).map(b => b.type).join(',')})`);
 
     // "מדבר: עוזר משרד פודים\n\n---\n\n…" — the model writing out its own role
     // before answering. Take the header off and keep the answer.
@@ -274,7 +285,7 @@ async function compose(analysis, profile, history = [], directive = null) {
       console.warn('✂️  Stripped a role header from the reply before sending');
       text = stripped;
     }
-    if (!text) return null;
+    if (!text) return giveUp('reply was only a role header');
 
     // Hit the ceiling anyway? Then the last sentence is half-written. Send what
     // is whole and drop the fragment; a reply that stops mid-word reads as a
@@ -282,7 +293,7 @@ async function compose(analysis, profile, history = [], directive = null) {
     if (res.stop_reason === 'max_tokens') {
       const trimmed = trimToWholeSentence(text);
       console.warn(`✂️  Reply hit the token cap — trimmed ${text.length - trimmed.length} chars`);
-      if (!trimmed) return null;                  // nothing whole to send
+      if (!trimmed) return giveUp('hit the token cap with no whole sentence');
       text = trimmed;
     }
 
@@ -309,8 +320,9 @@ async function compose(analysis, profile, history = [], directive = null) {
       try {
         countCall();
         const res2 = await client.messages.create({
+          ...noThinking(pickModel(analysis)),
           model: pickModel(analysis),
-          max_tokens: 700,
+          max_tokens: 1500,
           system: systemPrompt,
           messages: [
             { role: 'user', content: userContent },
@@ -393,6 +405,17 @@ function diagnose(msg = '') {
  * objection, or a lead hot enough that the reply decides the deal.
  * Everything else gets the fast model — on WhatsApp, speed is quality.
  */
+/**
+ * Newer models think before answering unless told not to. For a WhatsApp reply
+ * that tripled the output tokens and the latency (7s vs 3s), and with the old
+ * 700-token cap the thinking sometimes used the whole budget — the reply came
+ * back empty and the customer got a script. Thinking is switched off for the
+ * reply; the rules are in the prompt, not in a chain of thought.
+ */
+function noThinking(model) {
+  return /sonnet-5-5|opus-5|fable|mythos/.test(String(model)) ? { thinking: { type: 'between_tools' } } : {};
+}
+
 function pickModel(analysis) {
   if (config.AI_COMPOSE !== 'auto') return config.AI_MODEL_SMART;
   const highStakes =
@@ -471,7 +494,9 @@ const COMPARATIVE_FEE = [
   /(?:קרוב|קרובה|קרובים)\s+(?:יותר\s+)?ל-?\s?\d/,
   /(?:משפיע|משפיעה|דוחף|מוריד|מעלה)\s+(?:את\s+ה(?:מחיר|עלות)\s+)?לכיוון/,
   // "התעריף יהיה הרבה יותר נמוך", "העלות אצלך נמוכה יותר ממה שחשבת" (16 Oct)
-  /(?:עלות|העלות|מחיר|המחיר|תעריף|התעריף|שכר\s*(?:ה)?טרחה)[^.\n?]{0,25}(?:נמוך|נמוכה|גבוה|גבוהה|זול|זולה|יקר|יקרה)/,
+  // Whole words only: "העלות תלויה בעיקר…" contains "יקר" inside "בעיקר", and
+  // that alone blocked 9 honest answers about what drives the cost.
+  /(?:עלות|העלות|מחיר|המחיר|תעריף|התעריף|שכר\s*(?:ה)?טרחה)[^.\n?]{0,25}(?<![֐-׿])[והב]?(?:נמוך|נמוכה|גבוה|גבוהה|זול|זולה|יקר|יקרה)(?![֐-׿])/,
   /ההפרש\s+בין[^.\n]{0,15}\d/,
   /(?:ב)?(?:קצה|תחתית|ראש)\s+(?:ה)?(?:טווח|תחתון|עליון)/,
   /(?:ה)?קצה\s+ה?(?:תחתון|עליון)/,
@@ -761,7 +786,7 @@ const RANGE_REFERRAL = /פגיש|שיחת?\s+(?:ה)?ייעוץ|שיחה\s+קצר
  */
 const FEE_SCOPE_CLAIM = [
   /(?:לתיק\s+כולו|לא\s+לנפש|לא\s+לאדם|לכל\s+המשפחה|למשפחה\s+כולה)(?=$|[\s,.!?—*-])/,
-  /(?:הכל|הכול)\s+כלול|כלול(?:ים|ה|ות)?\s+(?:בתיק|במחיר|בשכר|בעלות|מראש)|חלק\s+מהעלות\s+הכוללת|כבר\s+בפנים|תחת\s+קורת\s+גג\s+אחת/,
+  /(?:הכל|הכול)\s+כלול|(?<!מה\s)(?<!מה\s+בדיוק\s)(?<!אם\s)(?<!ומה\s)כלול(?:ים|ה|ות)?\s+(?:בתיק|במחיר|בשכר|בעלות|מראש)|חלק\s+מהעלות\s+הכוללת|כבר\s+בפנים|תחת\s+קורת\s+גג\s+אחת/,
   /(?:אין|בלי|ללא)\s+(?:הפתעות|תשלומים\s+נוספים|תוספות)/,
 ];
 
@@ -779,7 +804,8 @@ const FALSE_FOLLOWUP = [
  * צודקת" (רותם, מיכל — 16 Oct) broke the prompt's gender rule.
  */
 const FEMININE_SELF = [
-  /אני\s+(?:לא\s+)?(?:יכולה|מבינה|יודעת|בטוחה|ממליצה|מציעה|חושבת|שמחה|רוצה|מעדיפה|צריכה)(?=$|[\s,.!?])/,
+  // "רוצה" and "שמחה" are spelled the same in the masculine — not evidence.
+  /אני\s+(?:לא\s+)?(?:יכולה|מבינה|יודעת|בטוחה|ממליצה|מציעה|חושבת|מעדיפה|צריכה)(?=$|[\s,.!?])/,
   /(?:^|\n|[.!?]\s+)מבינה(?=[,\s.!])/,
 ];
 
@@ -802,6 +828,14 @@ function invalidCallDay(text) {
 
 function enforceGuardrails(text, profile = null) {
   lastBlockReason = null;
+  // "היום אחה״צ או מחר בבוקר" written on a Friday: correct the day instead of
+  // throwing the whole reply away — the next working day is Sunday.
+  if (invalidCallDay(text)) {
+    text = String(text).replace(new RegExp(INVENTED_CALL_TIME.source, 'g'), (m, day, ...rest) => {
+      const slot = m.slice(day.length).trim();
+      return `ביום ראשון ${slot}`;
+    }).replace(/(ביום ראשון [^\s?.,]+(?:\s+[^\s?.,]+)?)\s+או\s+ביום ראשון\s+/, '$1 או ');
+  }
   const original = text;
   if (FEE_SCOPE_CLAIM.some(re => re.test(text))) {
     return block('🛑 Guardrail: claimed what the fee covers or whether it is per person — only the lawyer says that');
@@ -811,9 +845,6 @@ function enforceGuardrails(text, profile = null) {
   }
   if (FEMININE_SELF.some(re => re.test(text))) {
     return block('🛑 Guardrail: spoke of itself in the feminine — the bot always uses the masculine about itself');
-  }
-  if (invalidCallDay(text)) {
-    return block('🛑 Guardrail: call time lands on Friday/Saturday — the office works Sun–Thu 09:00–18:00; ask when suits them');
   }
   APPROVED_RANGE.lastIndex = 0;
   if (APPROVED_RANGE.test(text)) {

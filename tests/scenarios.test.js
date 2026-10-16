@@ -572,8 +572,9 @@ async function run() {
     check('allows offering time slots as a question',
       brain.enforceGuardrails('מתי נוח שעו״ד פודים יחזור אליך — היום אחר הצהריים או מחר בבוקר?') !== null);
     brain._setClock(() => new Date('2026-10-16T10:00:00+03:00'));   // a Friday
-    check('but not "היום/מחר" on a Friday, when the office is closed',
-      brain.enforceGuardrails('מתי נוח שעו״ד פודים יחזור אליך — היום אחר הצהריים או מחר בבוקר?') === null);
+    const fri = brain.enforceGuardrails('מתי נוח שעו״ד פודים יחזור אליך — היום אחר הצהריים או מחר בבוקר?');
+    check('on a Friday "היום/מחר" becomes Sunday instead of a lost reply',
+      !!fri && !/היום|מחר/.test(fri) && /ביום ראשון/.test(fri), fri);
     brain._setClock(null);
     check('allows the length of the consultation itself',
       brain.enforceGuardrails('שיחת הייעוץ אורכת כ-15 דקות, ללא עלות') !== null);
@@ -2277,6 +2278,13 @@ async function run() {
     check('the scripted answer passes its own guardrail', brain.enforceGuardrails(ans, { priceRangeAllowed: true }) === ans);
     check('"לאדם" from the model passes',
       brain.enforceGuardrails('הטווח הוא 8,000 עד 14,000 ₪ לאדם, כולל תרגומים, הכנת התיק והגשתו. כל מקרה נבחן לגופו — את המחיר המדויק תקבלי בפגישה.', { priceRangeAllowed: true }) !== null);
+    check('"מה כלול בשכר הטרחה — עו״ד פודים מסביר" is not a claim',
+      brain.enforceGuardrails('את הפרטים על מה כלול בשכר הטרחה נותן עו״ד פודים.', {}) !== null);
+    check('"איתור מסמכים כלול במחיר" still is', brain.enforceGuardrails('איתור מסמכים כלול במחיר.', {}) === null);
+    check('"העלות תלויה בעיקר במסמכים" is not a comparative fee claim',
+      brain.enforceGuardrails('העלות תלויה בעיקר בכמה מסמכים כבר יש וכמה בני משפחה בתיק.', {}) !== null);
+    check('"ואני לא רוצה לזרוק לך סכום" is not feminine self-talk',
+      brain.enforceGuardrails('אין לי מספר לתת לך, ואני לא רוצה לזרוק לך סכום סתמי.', {}) !== null);
     check('"לתיק כולו" is blocked', brain.enforceGuardrails('הטווח הוא לתיק כולו.', { priceRangeAllowed: true }) === null);
     check('the prompt says per person and what is included', /לאדם/.test(prompts.composeSystem({}, [], [])) && /הכנת תיק הבקשה/.test(prompts.composeSystem({}, [], [])));
 

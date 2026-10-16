@@ -36,11 +36,11 @@ MY_BOT_PROMPT_FILE = KNOWLEDGE_DIR / "my_bot_prompt.md"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 # מודל לסוכן המאמן (הלקוח המדומה)
-TRAINER_MODEL = os.getenv("TRAINER_MODEL", "claude-sonnet-5-5")
+TRAINER_MODEL = os.getenv("TRAINER_MODEL", "claude-sonnet-4-5")
 # מודל לבוט הדמה (עד שתחבר את הבוט האמיתי)
-MOCK_BOT_MODEL = os.getenv("MOCK_BOT_MODEL", "claude-sonnet-5-5")
+MOCK_BOT_MODEL = os.getenv("MOCK_BOT_MODEL", "claude-sonnet-4-5")
 # מודל למעריך — כדאי מודל חזק, ההערכה היא הלב של המערכת
-EVALUATOR_MODEL = os.getenv("EVALUATOR_MODEL", "claude-sonnet-5-5")
+EVALUATOR_MODEL = os.getenv("EVALUATOR_MODEL", "claude-sonnet-4-5")
 
 # כתובת הבוט האמיתי שלך (כשתהיה מוכן)
 MY_BOT_ENDPOINT = os.getenv("MY_BOT_ENDPOINT", "")

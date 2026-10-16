@@ -1018,10 +1018,14 @@ async function handleFreeText(phone, session, text, opts = {}) {
   //    own words, referring to what the customer just said. The facts still
   //    get extracted into the profile either way; what changes is who does
   //    the talking.
+  // Who writes the reply must not depend on how sure the CLASSIFIER was. Until
+  // 16 Oct a confidence under 0.4 sent the turn to the scripted path — and the
+  // messages the classifier is least sure about are exactly the long,
+  // multi-question ones that most need the model. In the 19:2x trainer round
+  // 50 of 62 replies were scripts, with no error and no guardrail block.
   const aiWillCompose =
     brain.isAvailable() &&
-    config.AI_MODE === 'live' &&
-    analysis.confidence >= 0.4;
+    config.AI_MODE === 'live';
 
   if (!aiWillCompose && await handleScriptedState(phone, session, text, analysis)) {
     save(phone, session);

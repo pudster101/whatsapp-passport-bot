@@ -99,6 +99,11 @@ def run_simulation(
         log("lead", message, 1)
 
         for turn in range(1, max_turns + 1):
+            # הסוכן סיים בהודעה ריקה (רק תו הסיום) — לא שולחים לבוט מחרוזת ריקה
+            # (16.10: רון קיבל "400 Bad Request" מהבוט בגלל זה).
+            if not (message or "").strip():
+                transcript["stop_reason"] = "goal_reached"
+                break
             t0 = time.time()
             try:
                 bot_reply = send_to_my_bot(message, session_id=session_id, dry_run=dry_run)

@@ -774,8 +774,9 @@ async function run() {
     const counts = { A: 0, B: 0 };
     for (let i = 0; i < 10000; i++) counts[experiment.assign('97250' + i)]++;
     const share = counts.A / (counts.A + counts.B);
-    check('the split is even to within 2 points', Math.abs(share - 0.5) < 0.02,
-      `A=${counts.A} B=${counts.B}`);
+    // Concluded 29 Oct: A replied 14/15, B 11/17. Everyone gets A now.
+    check('the experiment is concluded — every lead gets the winning opening',
+      counts.A === 10000, `A=${counts.A} B=${counts.B}`);
 
     check('both variants have an opening and they differ',
       experiment.opening('A') && experiment.opening('B')
@@ -795,6 +796,7 @@ async function run() {
     // A greeted lead carries its variant, and the variant matches the pure
     // function — this is what the rollup groups by.
     const phone = '972500000077';
+    require('../src/storage').deleteConversation(phone);   // a stamp left by an earlier run
     await say(phone, 'היי');
     const prof = require('../src/storage').getConversation(phone)?.profile;
     check('a greeted lead is stamped with a variant',
@@ -1220,11 +1222,10 @@ async function run() {
     await say(phone, 'עלתה ב-1961');
 
     const afterYes = await say(phone, 'כן בשמחה');
-    check('saying yes asks for the details to hold the slot',
-      /שם|טלפון/.test(afterYes) && /לשריין/.test(afterYes), afterYes.slice(0, 70));
+    check('saying yes asks to use the number they write from — not for a name',
+      closing.CONSENT_RE.test(afterYes) && !/מה שמך/.test(afterYes), afterYes.slice(0, 120));
 
-    await say(phone, 'דנה לוי');
-    const withSlots = await say(phone, '0541234567');
+    const withSlots = await say(phone, 'כן');
     check('once reachable, real times are offered',
       /בשעה 1[78]:00/.test(withSlots), withSlots.slice(0, 100));
     check('the slots came from the 17:00–19:00 window',
@@ -1239,7 +1240,7 @@ async function run() {
     check('nothing was promised as confirmed',
       /לאישור|אעביר/.test(booked) && !/^✅/.test(booked));
     check('the lead was still captured as a lead',
-      !!profileOf(phone)?.name && !!profileOf(phone)?.clientPhone);
+      !!profileOf(phone)?.clientPhone && profileOf(phone)?.callbackConsent === true);
 
     // The whole point of the feature, as a number.
     const w = await dashboard.weekly(7);
@@ -1719,8 +1720,9 @@ async function run() {
 
     const first = await sendFile('Birth Certificate Or Harel HD.pdf');
     check('the file is acknowledged', /קיבלתי/.test(first), first.slice(0, 60));
-    check('and the name is asked for in the same breath',
-      /מה שמך המלא/.test(first), first.slice(0, 160));
+    // We hold the number they are writing from: ask to use it, one tap.
+    check('and the call is offered on the number they wrote from, in the same breath',
+      closing.CONSENT_RE.test(first) && !/מה שמך המלא/.test(first), first.slice(0, 200));
     check('documents are recorded as being in hand',
       profileOf(phone)?.eligibility?.hasDocuments === true);
 
@@ -2114,10 +2116,12 @@ async function run() {
     const offeredDay = /יום ([^\s,]+)/.exec(profileOf(ron)?.meeting?.offered?.[1]?.label || 'יום שני')[1];
     const picked = await say(ron, `יום ${offeredDay}`);
     check('picking a day requests that meeting', profileOf(ron)?.meeting?.status === 'requested');
-    check('and asks for name and phone to confirm it', /השם המלא ומספר הטלפון/.test(picked));
-    const done = await say(ron, 'רון כהן 0521234567');
-    check('name and number in one message are both captured',
-      profileOf(ron)?.name === 'רון כהן' && profileOf(ron)?.clientPhone === '0521234567');
+    check('and asks to confirm on the number they are writing from',
+      closing.CONSENT_RE.test(picked) && !/מה מספר הטלפון/.test(picked), picked.slice(-200));
+    const done = await say(ron, 'כן');
+    check('a "yes" is the number — the WhatsApp number, captured with consent',
+      profileOf(ron)?.clientPhone === closing.localPhone(ron) && profileOf(ron)?.callbackConsent === true,
+      String(profileOf(ron)?.clientPhone));
     check('and the request is confirmed, not re-asked',
       /הבקשה לפגישה/.test(done) && !/מתי נוח/.test(done), done.slice(0, 120));
   }
@@ -2451,6 +2455,198 @@ async function run() {
     const handoffSrc = fs.readFileSync(path.join(srcDir, 'sales', 'handoff.js'), 'utf8');
     check('the hot-lead alert now goes out on a template',
       /notifyHotLead[\s\S]{0,600}pudim_hot_lead/.test(handoffSrc));
+  }
+
+  // ── 50. October 15–29 live review ──────────────────────────────────────────
+  section('50. Oct 15–29 live review — leads who answered everything and left nothing');
+  {
+    const press = async (phone, id, title = '') => {
+      sent.length = 0;
+      await flows.handleMessage(phone, {
+        type: 'interactive', id: `b${Math.random()}`,
+        interactive: { type: 'button_reply', button_reply: { id, title } },
+      });
+      return sent.map(x => x.text).join('\n---\n');
+    };
+    const kinds = () => sent.map(x => x.type);
+    const experiment = require('../src/sales/experiment');
+    const scheduler = require('../src/followup/scheduler');
+    const meeting = require('../src/sales/meeting');
+
+    // Opening: the short one, with one-tap answers.
+    const a = newPhone();
+    const hello = await say(a, TRIGGER);
+    check('every lead gets the short opening', hello.includes(experiment.opening('A')), hello.slice(0, 80));
+    check('and it goes out with answer buttons', kinds().includes('buttons'));
+    const tapped = await press(a, 'gen_grand', 'סבא / סבתא');
+    check('a tapped answer is understood as the answer',
+      !!profileOf(a)?.eligibility?.ancestor && tapped.length > 0, String(profileOf(a)?.eligibility?.ancestor));
+
+    // "אבדוק ואחזור" — the October leak.
+    const b = newPhone();
+    await say(b, TRIGGER);
+    await say(b, 'אבא');
+    const hw = await say(b, 'אברר');
+    check('"אברר" is answered with: no documents needed, may he call this number',
+      /לא צריך מסמכים/.test(hw) && closing.CONSENT_RE.test(hw), hw.slice(0, 160));
+    check('with the number they wrote from, formatted', hw.includes(closing.localPhone(b)));
+    check('and as buttons', kinds().includes('buttons'));
+    check('it does not send them off to look', !/קח את הזמן|בנחת/.test(hw));
+    const yes = await press(b, 'cb_yes', 'כן, שיחזור אליי');
+    check('one tap makes a lead — the WhatsApp number, with consent',
+      profileOf(b)?.clientPhone === closing.localPhone(b) && profileOf(b)?.callbackConsent === true,
+      String(profileOf(b)?.clientPhone));
+    check('and the lead is confirmed without being asked to type anything',
+      !/מה מספר|לאיזה מספר|מה שמך המלא/.test(yes), yes.slice(0, 160));
+
+    // "אפשר להתקשר אליי עכשיו" — 18 Oct, never called.
+    const c = newPhone();
+    await say(c, TRIGGER);
+    await say(c, 'הורי ילידי בוקובינה');
+    const now = await say(c, 'אפשר להתקשר אליי עכשיו');
+    check('"call me now" is a lead on the spot',
+      profileOf(c)?.clientPhone === closing.localPhone(c) && profileOf(c)?.callNow === true);
+    check('and is not answered with evening slots or a request for a number',
+      !/בשעה 1[78]:00/.test(now) && !/מה מספר|לאיזה מספר/.test(now), now.slice(0, 160));
+
+    // A thumbs-up after "רשמתי" is not a broken message.
+    const thumbs = await say(c, '👍');
+    check('a 👍 after the lead is in gets no "ההודעה נשלחה חלקית"', !/חלקית|לא הגיע לי טקסט/.test(thumbs), thumbs);
+    const sticker = (async () => { sent.length = 0; await flows.handleMessage(c, { type: 'sticker', id: `s${Math.random()}`, sticker: {} }); return sent.length; });
+    check('a sticker gets no reply at all', (await sticker()) === 0);
+
+    // A 👍 that answers the consent question is a yes.
+    const d = newPhone();
+    await say(d, TRIGGER);
+    await say(d, 'סבתא');
+    await say(d, 'אחפש מסמכים');
+    await say(d, '👍');
+    check('a 👍 to "may he call this number?" is a yes', profileOf(d)?.clientPhone === closing.localPhone(d));
+
+    // After the call is arranged, content is not answered with a canned line.
+    const e = newPhone();
+    await say(e, TRIGGER);
+    await say(e, 'סבא וסבתא');
+    await say(e, 'נולדו בפוקשאני');
+    await say(e, 'אפשר שיתקשר אליי מחר בבוקר');
+    const info = await say(e, 'הסבים לא עלו לארץ, היגרו לארה״ב ונפטרו שם');
+    check('new information after the call is arranged is not answered "רשום. אם משהו משתנה"',
+      !/^רשום\. אם משהו משתנה|^סגור\. 👍|^מצוין, רשמתי\. 👍 נדבר אז\.$/.test(info.trim()), info.slice(0, 100));
+    const missed = await say(e, 'הוא לא צלצל כנקבע');
+    check('"הוא לא צלצל כנקבע" reaches a human', profileOf(e)?.humanStatus === 'notified'
+      && !/^רשום\. אם משהו משתנה/.test(missed.trim()), missed.slice(0, 100));
+    const ack1 = await say(e, 'תודה');
+    const ack2 = await say(e, 'תודה רבה');
+    check('a second "תודה" in a row gets no second acknowledgement', !(ack1 && ack2 && ack1 === ack2), `${ack1} | ${ack2}`);
+
+    // A timing constraint survives the moment the number lands.
+    const f = newPhone();
+    await say(f, TRIGGER);
+    await say(f, 'אבא נולד בבסרביה ועזב ב-1939');
+    await say(f, 'אוכל להגיע רק מה-27/11 ואילך');
+    const after = await say(f, '0525757709');
+    check('"רק מה-27/11 ואילך" + a number does not get the next two evenings',
+      !/בשעה 1[78]:00/.test(after), after.slice(0, 160));
+    check('the request is kept for the office', /27\/11/.test(profileOf(f)?.requestedTiming || ''),
+      String(profileOf(f)?.requestedTiming));
+
+    // Slot picking.
+    const slots = [{ label: 'יום שלישי, 27.10 בשעה 17:00', hour: 17, iso: 'x27' },
+                   { label: 'יום רביעי, 28.10 בשעה 17:00', hour: 17, iso: 'x28' }];
+    check('"28.10 ב17:00" books the 28th, not the first 17:00',
+      meeting.parseExplicitSlotChoice('28.10 ב17:00', slots)?.iso === 'x28');
+    check('an hour shared by both slots is not a choice',
+      meeting.parseExplicitSlotChoice('ב-17:00 טוב', slots) === null);
+    check('"next week on Tuesday" is another time, not a pick',
+      meeting.namesOtherTime('שבוע הבא אם אפשר ביום שלישי', slots) &&
+      meeting.parseExplicitSlotChoice('שבוע הבא אם אפשר ביום שלישי', slots) === null);
+    check('"28, לא 27" names the 28th', meeting.slotMentioned('28, לא 27', slots)?.iso === 'x28');
+    check('"בבוקרשט" is a city, not "בבוקר"', !meeting.namesOtherTime('נולד בבוקרשט', []));
+
+    const g = newPhone();
+    await say(g, 'היי, אבא שלי נולד ביאשי ועזב ב-1971. אני זכאי?');
+    await say(g, 'תן טווח, סדר גודל');
+    if (profileOf(g)?.meeting?.status === 'slots_proposed') {
+      await say(g, 'לא יוכל בימים הקרובים, שבוע הבא אם אפשר ביום שלישי');
+      check('asking for another week records a custom request',
+        profileOf(g)?.meeting?.status === 'custom_request', String(profileOf(g)?.meeting?.status));
+      await say(g, 'ב-17:00 טוב');
+      check('and a later "17:00" does not book an evening the lead turned down',
+        profileOf(g)?.meeting?.status !== 'requested', String(profileOf(g)?.meeting?.slotLabel));
+    } else {
+      check('setup: slots were offered', false, String(profileOf(g)?.meeting?.status));
+    }
+
+    // A requested slot can be corrected.
+    const h = newPhone();
+    await say(h, 'היי, אבא שלי נולד ביאשי ועזב ב-1971. אני זכאי?');
+    await say(h, 'תן טווח, סדר גודל');
+    const offered = profileOf(h)?.meeting?.offered || [];
+    if (offered.length === 2) {
+      const day = s2 => /יום ([^\s,]+)/.exec(s2.label)[1];
+      await say(h, `יום ${day(offered[0])}`);
+      const dOf = s2 => /(\d{1,2})\.\d{1,2}/.exec(s2.label)[1];
+      const fix = await say(h, `${dOf(offered[1])}, לא ${dOf(offered[0])}`);
+      check('"28, לא 27" moves the request to the other evening',
+        profileOf(h)?.meeting?.slotIso === offered[1].iso && /תיקנתי/.test(fix), fix.slice(0, 80));
+    } else {
+      check('setup: two slots offered', false, String(offered.length));
+    }
+
+    // Cannot come to Tel Aviv.
+    check('"אני לא מדרים עד ת״א" means a video meeting', meeting.signalsCannotCome('אני לא מדרים עד ת"א'));
+    check('"אני חיפאית" too', meeting.signalsCannotCome('אני חיפאית'));
+    check('an office offer mentions Zoom in the same breath',
+      /בזום/.test(meeting.slotPrompt(slots, 'office')));
+
+    // Withdrawal.
+    const w = newPhone();
+    await say(w, TRIGGER);
+    await say(w, 'אמא');
+    const bye = await say(w, 'מבקש לפרוש תודה');
+    check('"מבקש לפרוש" gets a thank-you, not a pitch',
+      !closing.CONSENT_RE.test(bye) && !/בשעה 1[78]:00|מה מספר/.test(bye) && /תודה/.test(bye), bye.slice(0, 120));
+    check('and is never followed up', profileOf(w)?.followUpsSuppressed === true);
+
+    // The model's habit of asking for a number is caught.
+    const asked = 'מעולה. מה מספר הטלפון שלך?';
+    check('the AI phone ask is detected', closing.asksForPhone(asked));
+    check('and stripped cleanly', closing.stripPhoneAsks(asked) === 'מעולה.');
+    check('English too', closing.asksForPhone("What's the best phone number to reach you on?"));
+
+    // Follow-ups offer the call instead of asking for one more fact.
+    const fp = { waPhone: '972521112233', name: null, eligibility: { birthPlace: 'צרנוביץ' } };
+    const q1 = scheduler.SEQUENCES ? scheduler.SEQUENCES.QUALIFICATION[0].message(fp) : '';
+    if (q1) {
+      check('the qualification follow-up no longer asks which town', !/באיזו עיר/.test(q1));
+      check('it offers the call on this number', closing.CONSENT_RE.test(q1));
+      check('"נזכרתי בשאלה ששאלת" is gone', !/נזכרתי בשאלה ששאלת/.test(scheduler.SEQUENCES.DISCOVERY[0].message(fp)));
+    }
+
+    // The rules the model is given.
+    const sys = prompts.composeSystem({ waPhone: '972521112233', eligibility: {}, meeting: {} }, []);
+    check('the prompt forbids asking for a number', /לעולם אל תשאל "מה מספר הטלפון שלך\?"/.test(sys));
+    check('the prompt knows a child of a Romanian-born parent has eligible children at any age', /בלי קשר לגילם/.test(sys));
+    check('the prompt splits Bukovina north and south', /דרום בוקובינה/.test(sys));
+    check('the prompt does not estimate a route for pre-1918 emigrants', /לפני 1918/.test(sys));
+    check('the prompt never echoes medication or medical state', /מורפינים/.test(sys));
+    check('the prompt carries today\'s date', /היום: /.test(sys));
+    check('the prompt handles "אבדוק ואחזור"', /אבדוק ואחזור/.test(sys));
+
+    // Media: the consent ask comes once, not after every photo.
+    const m = newPhone();
+    await say(m, TRIGGER);
+    await say(m, 'אמא');
+    const sendFile = async () => {
+      sent.length = 0;
+      await flows.handleMessage(m, { type: 'image', id: `f${Math.random()}`, image: { id: `i${Math.random()}`, mime_type: 'image/jpeg' } });
+      return sent.map(x => x.text).join('\n');
+    };
+    const f1 = await sendFile();
+    const conv = storage.getConversation(m); conv.lastMediaAckAt = new Date(Date.now() - 60000).toISOString();
+    const f2 = await sendFile();
+    check('the first photo offers the call', closing.CONSENT_RE.test(f1), f1.slice(0, 120));
+    check('the next photo does not ask again', !closing.CONSENT_RE.test(f2) && !/מה שמך/.test(f2), f2.slice(0, 120));
   }
 
   // ── Summary ────────────────────────────────────────────────────────────────

@@ -106,9 +106,10 @@ function decide({ analysis, profile, text, recentClose = false }) {
         'אל תציין ימים או שעות בעצמך — המערכת מוסיפה את המועדים הפנויים האמיתיים.'
       : 'הצע שיחה קצרה עם עו״ד פודים עצמו — ללא עלות וללא התחייבות — עם שתי אפשרויות זמן קונקרטיות.';
 
+  // We hold the number they write from. What is missing is a yes to using it.
   const PHONE_RIDER = noNumber
-    ? ' ⚠️ אין מספר טלפון בתיק. סיים את ההודעה בבקשה מפורשת למספר טלפון — ' +
-      'גם אם כבר סוכם מועד, וגם אם ביקשת בעבר. מועד בלי מספר אינו פגישה.'
+    ? ' ⚠️ הלקוח עוד לא אישר שיחה. סיים בשאלה אם אפשר שעו״ד פודים יתקשר *למספר הזה* ' +
+      '("אפשר שעו״ד פודים יתקשר למספר הזה?"). לעולם אל תבקש שיקליד מספר.'
     : '';
 
   // 0. An insisting lead asking the price gets the approved range even when the
@@ -391,17 +392,16 @@ function decide({ analysis, profile, text, recentClose = false }) {
         // accepts, where a bare "what is your name?" in the middle of a
         // booking reads as the bot losing the thread.
         if (!leadProfile.hasContactDetails(profile)) {
-          const missing = !profile.name ? 'שם מלא' : 'מספר טלפון';
+          // Oct: "מה שמך המלא?" and then "מה מספר הטלפון שלך?" — two more
+          // hurdles between a yes and a meeting. The number is the one they
+          // write from; one tap confirms it, and the name is the office's job.
           return {
             action: ACTIONS.REQUEST_CONTACT,
-            reason: `meeting accepted — need ${!profile.name ? 'name' : 'phone'} to hold the slot`,
+            reason: 'meeting accepted — need consent to the WhatsApp number',
             directive:
-              `הלקוח הסכים לפגישה. בקש ${missing} *כדי לשריין את המועד* — זו הסיבה, ואמור אותה. ` +
-              'בקשה אחת בלבד, משפט אחד, בלי לחזור על ההצעה ובלי לתת מועדים עדיין.',
-            fallbackText: !profile.name
-              ? 'מעולה. 🙂\n\nכדי לשריין לך את המועד — *מה השם המלא שלך?*'
-              : `נהדר${profile.name ? `, ${profile.name}` : ''}. ` +
-                'כדי לשריין את המועד — *מה מספר הטלפון שלך?*',
+              'הלקוח הסכים לפגישה. שאל רק אם אפשר שעו״ד פודים יאשר איתו את המועד *במספר הזה* — ' +
+              'משפט אחד, בלי לחזור על ההצעה, בלי לשאול שם ובלי לתת מועדים עדיין.',
+            fallbackText: `${profile.name ? `נהדר, ${profile.name}.` : 'מעולה. 🙂'}\n\n${closing.consentAsk(profile)}`,
             escalate: false,
             contactAsk: true,
             meetingAccepted: true,
@@ -475,14 +475,10 @@ function decide({ analysis, profile, text, recentClose = false }) {
         ? `⚠️ כבר ביקשת פרטים ${contactAttempts} פעמים והלקוח לא נתן. ` +
           `אל תבקש שוב את אותו דבר — רד מדרגה: בקש רק שם פרטי, או הצע מייל, ` +
           `או פשוט תן את מספר המשרד ותן לו את השליטה.`
-        : !profile.name
-          ? 'הלקוח מגלה עניין אמיתי. בקש בטבעיות את שמו כדי שנוכל לחזור אליו.'
-          : 'יש לנו שם. בקש את מספר הטלפון לחזרה.',
+        : 'הלקוח מגלה עניין אמיתי. שאל בטבעיות אם אפשר שעו״ד פודים יתקשר אליו *למספר הזה*. אל תשאל שם ואל תבקש שיקליד מספר.',
       fallbackText: contactAttempts >= 1
         ? closing.contactLadder(profile, contactAttempts)
-        : (!profile.name
-            ? `נשמע שזה בהחלט רלוונטי עבורך. 😊\n\nכדי שעו״ד פודים יחזור אליך — *מה שמך המלא?*`
-            : `מעולה. *ומה מספר הטלפון שלך לחזרה?*`),
+        : `נשמע שזה בהחלט רלוונטי. 🙂\n\n${closing.consentAsk(profile)}`,
       escalate: false,
       contactAsk: true,
     };
@@ -500,9 +496,8 @@ function decide({ analysis, profile, text, recentClose = false }) {
       action: ACTIONS.REQUEST_CONTACT,
       reason: 'name known, phone missing',
       directive:
-        `יש לנו את שמו (${profile.name}) אבל אין מספר טלפון. ` +
-        'בקש *מספר טלפון* — במשפט אחד, בטבעיות, ובלי לחזור על ניסוח שכבר השתמשת בו. ' +
-        'אל תבקש מייל במקום, ואל תסתפק בשם.',
+        `יש לנו את שמו (${profile.name}) והוא כותב מהנייד שלו, אבל עוד לא אישר שיחה. ` +
+        'שאל אם אפשר שעו״ד פודים יתקשר *למספר הזה* — במשפט אחד, בטבעיות. אל תבקש שיקליד מספר.',
       fallbackText: closing.nextContactAsk(profile, { seed: contactAttempts }),
       escalate: false,
       contactAsk: true,

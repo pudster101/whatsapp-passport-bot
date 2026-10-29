@@ -65,7 +65,11 @@ function leadCard(profile, opts = {}) {
   lines.push('');
 
   if (profile.name) lines.push(`👤 *${profile.name}*`);
-  if (profile.clientPhone) lines.push(`📞 ${profile.clientPhone}`);
+  else if (profile.waName) lines.push(`👤 (שם בפרופיל הוואטסאפ: ${profile.waName})`);
+  if (profile.clientPhone) lines.push(`📞 ${profile.clientPhone}${profile.callbackConsent ? ' — אישר/ה שיחה למספר הזה' : ''}`);
+  if (profile.callNow) lines.push(`🚨 *ביקש/ה שיתקשרו עכשיו*`);
+  if (profile.requestedTiming) lines.push(`🗓️ ביקש/ה: «${profile.requestedTiming}»`);
+  if (profile.prefersPhone) lines.push(`☎️ מעדיף/ה שיחת טלפון`);
   lines.push(`📱 וואטסאפ: +${profile.waPhone}`);
   lines.push('');
 
@@ -147,8 +151,8 @@ async function notifyNewLead(profile) {
     text,
     isCourse ? 'b1_lead_new' : 'passport_lead_new',
     isCourse
-      ? [profile.name, profile.clientPhone, profile.waPhone]
-      : [profile.name, profile.clientPhone, profile.waPhone,
+      ? [profile.name || profile.waName || 'לא נמסר', profile.clientPhone, profile.waPhone]
+      : [profile.name || profile.waName || 'לא נמסר', profile.clientPhone, profile.waPhone,
          e.ancestor || '—', e.birthYear || '—', e.birthPlace || '—']
   );
 }
@@ -165,7 +169,7 @@ async function notifyHotLead(profile) {
   return notifyAgents(
     text,
     'pudim_hot_lead',
-    [profile.name || 'לא נאסף', profile.waPhone, String(profile.buyingIntent || 0)]
+    [profile.name || profile.waName || 'לא נאסף', profile.waPhone, String(profile.buyingIntent || 0)]
   );
 }
 
@@ -182,7 +186,7 @@ async function notifyHandoff(profile, reason, opts = {}) {
   return notifyAgents(
     text,
     'pudim_handoff',
-    [profile.name || 'לא נאסף', profile.waPhone, profile.clientPhone || '—']
+    [profile.name || profile.waName || 'לא נאסף', profile.waPhone, profile.clientPhone || '—']
   );
 }
 
@@ -201,7 +205,7 @@ async function notifyQuestion(profile, question) {
   return notifyAgents(
     text,
     'pudim_handoff',
-    [profile.name || 'לא נאסף', profile.waPhone, profile.clientPhone || '—']
+    [profile.name || profile.waName || 'לא נאסף', profile.waPhone, profile.clientPhone || '—']
   );
 }
 
@@ -223,7 +227,7 @@ async function notifyMeetingRequest(profile, slot, mode = 'office') {
   return notifyAgents(
     text,
     'pudim_meeting_request',
-    [profile.name || 'לא נאסף', slot.label, profile.clientPhone || '—']
+    [profile.name || profile.waName || 'לא נאסף', slot.label, profile.clientPhone || '—']
   );
 }
 

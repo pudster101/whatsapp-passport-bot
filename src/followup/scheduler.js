@@ -16,6 +16,7 @@ const storage = require('../storage');
 const wa = require('../whatsapp');
 const stages = require('../sales/stages');
 const kb = require('../kb/knowledge');
+const closing = require('../sales/closing');
 
 // ─── Sequences ────────────────────────────────────────────────────────────────
 // Each entry: how long to wait since last inbound, and what to say.
@@ -49,15 +50,19 @@ const SEQUENCES = {
   QUALIFICATION: [
     {
       afterHours: 24,
+      // Oct: a lead who had already written "צרנוביץ" was asked, a day later,
+      // which town the relative was born in. And asking for one more fact is
+      // what sent leads off to "check" in the first place. The follow-up now
+      // offers the call instead — the lawyer completes the picture himself.
       message: p =>
         `היי${p.name ? ` ${p.name}` : ''} 👋\n\n` +
-        `רק בשביל הסדר — עצרנו באמצע בדיקת הזכאות שלך.\n\n` +
-        `אם נוח לך, מספיק שתגיד לי *באיזו עיר או אזור ברומניה* נולד בן המשפחה, ואוכל להגיד לך הרבה יותר מדויק אם יש כאן תיק.`,
+        `עצרנו באמצע בדיקת הזכאות — ולא צריך את כל הפרטים כדי להמשיך. ` +
+        `את מה שחסר עו״ד פודים משלים איתך בשיחה קצרה.\n\n${closing.consentAsk(p)}`,
       messageEn: p =>
         `Hi${p.name ? ` ${p.name}` : ''} \u{1F44B}\n\n` +
-        `We stopped halfway through checking your eligibility.\n\n` +
-        `If you tell me *which town or region in Romania* your relative was born ` +
-        `in, I can tell you much more precisely whether there is a case here.`,
+        `We stopped halfway through checking your eligibility — and you don't need every detail ` +
+        `to carry on. Attorney Pudim can fill in what's missing with you in a short call.\n\n` +
+        `${closing.consentAsk({ ...p, lang: 'en' })}`,
     },
     {
       afterHours: 96,
@@ -93,15 +98,14 @@ const SEQUENCES = {
     {
       afterHours: 48,
       message: p =>
-        `היי${p.name ? ` ${p.name}` : ''}, נזכרתי בשאלה ששאלת. 💭\n\n` +
-        `אם תרצה, עו״ד פודים יכול לעבור על המקרה שלך בשיחה קצרה *ללא התחייבות* — ותדע בדיוק איפה אתה עומד לפני שאתה מחליט משהו.\n\n` +
-        `רוצה שאסדר?`,
+        // "נזכרתי בשאלה ששאלת" went to leads who had asked nothing (26 Oct).
+        `היי${p.name ? ` ${p.name}` : ''}, חשבתי על השיחה שלנו. 💭\n\n` +
+        `עו״ד פודים יכול לעבור על המקרה שלך בשיחה קצרה — ותדע בדיוק איפה אתה עומד לפני שאתה מחליט משהו.\n\n` +
+        `${closing.consentAsk(p)}`,
       messageEn: p =>
-        `Hi${p.name ? ` ${p.name}` : ''} — I was thinking about your question. \u{1F4AD}\n\n` +
-        `If you like, a lawyer from the office can go over your case in a short ` +
-        `call *with no obligation*, so you know exactly where you stand before ` +
-        `you decide anything.\n\n` +
-        `Want me to arrange it?`,
+        `Hi${p.name ? ` ${p.name}` : ''} — I was thinking about our conversation. \u{1F4AD}\n\n` +
+        `Attorney Pudim can go over your case in a short call, so you know exactly where you ` +
+        `stand before you decide anything.\n\n${closing.consentAsk({ ...p, lang: 'en' })}`,
     },
     {
       afterHours: 168,
@@ -172,12 +176,10 @@ const SEQUENCES = {
       afterHours: 12,
       message: p =>
         `היי${p.name ? ` ${p.name}` : ''} 👋\n\n` +
-        `נראה שנקטעה לנו השיחה. רק צריך את ${p.name ? '*מספר הטלפון*' : '*השם והטלפון*'} שלך ועו״ד פודים יחזור אליך.`,
+        `נראה שנקטעה לנו השיחה.\n\n${closing.consentAsk(p)}`,
       messageEn: p =>
         `Hi${p.name ? ` ${p.name}` : ''} \u{1F44B}\n\n` +
-        `It looks like our conversation got cut off. All I need is your ` +
-        `${p.name ? '*phone number*' : '*name and phone number*'} and a lawyer ` +
-        `from the office will get back to you.`,
+        `It looks like our conversation got cut off.\n\n${closing.consentAsk({ ...p, lang: 'en' })}`,
     },
     {
       afterHours: 72,

@@ -15,9 +15,14 @@
 const crypto = require('crypto');
 
 const VARIANTS = ['A', 'B'];
+const WINNER = 'A';
 
 /** Deterministic, uniform, stable across restarts and across processes. */
 function assign(phone) {
+  // Concluded 29 Oct. Over 15–29 Oct, A (short: "מי במשפחה נולד ברומניה?")
+  // got a reply from 14 of 15 leads; B (the long "הכלל הבסיסי…") from 11 of 17.
+  // Everyone gets A. The hash below is kept for the next test.
+  if (WINNER) return WINNER;
   if (!phone) return 'A';
   const digest = crypto.createHash('sha256').update(String(phone)).digest();
   return VARIANTS[digest[0] % VARIANTS.length];

@@ -144,6 +144,10 @@ function takenSlots(conversations = {}) {
 const AGREES = /(כן|בסדר|אשמח|מעוניין|מעוניינת|מתאים|בוא נקבע|נקבע|אפשר|בשמחה|יאללה|סבבה|מצוין|מעולה|למה לא)/;
 const DECLINES_MEETING = /(לא נוח לי להגיע|לא רוצה להגיע|לא מתאים לי להגיע|אין לי זמן להגיע|עדיף(?: לי)? טלפון|רק טלפון|בטלפון עדיף|לא צריך פגישה)/;
 const CANNOT_COME = /(בחו״ל|בחו"ל|בחול\b|לא בארץ|מחוץ לארץ|ברומניה|באירופה|רחוק מדי|גר רחוק|גרה רחוק|בצפון|בדרום|באילת|קשה לי להגיע|אין לי איך להגיע|לא יכול להגיע|לא יכולה להגיע|מרותק|מאושפז|זום|וידאו)/;
+// Oct: "אני לא מדרים עד ת"א" (ויטוריו), "אני חיפאית" (רון), "אני גרה בנהריה"
+// (חנה), "אני ממוצקין" (מורן), "אני גר בקרית טבעון" (יהודה) — all were offered
+// Ashkenazi 21 again, and ויטוריו was booked into the office with Waze links.
+const CANNOT_COME_MORE = /(?:לא\s+(?:מגיע|מגיעה|אגיע|נוסע|נוסעת|מדרים|מדרימה|יורד|יורדת|יכול\s+לנסוע|יכולה\s+לנסוע)\s+(?:עד\s+)?(?:ל)?(?:ת"א|ת״א|תל[\s-]*אביב))|חיפה|חיפאי|חיפאית|נהריה|עכו|צפת|טבריה|כרמיאל|קרית\s*(?:שמונה|מוצקין|ביאליק|ים|אתא|טבעון)|ממוצקין|טבעון|עפולה|נצרת|יקנעם|זכרון\s*יעקב|באר\s*שבע|דימונה|ערד|מוגבל\s+פיזית|מוגבלת\s+פיזית|מוגבל|מוגבלת|בבית\s+החולים|מאושפזת|abroad|not\s+in\s+israel|(?:can(?:'|’)?t|cannot)\s+(?:come|get)\s+to\s+tel\s*aviv|zoom|video/i;
 
 // Naming a day or an evening hour is a yes too: "יום שני" in answer to
 // "רוצה שנקבע?" was read as small talk and the meeting was dropped.
@@ -168,7 +172,8 @@ function signalsMeetingRefusal(text) {
 
 /** Physically cannot come — gets the video meeting, not a lesser offer. */
 function signalsCannotCome(text) {
-  return CANNOT_COME.test(String(text || ''));
+  const t = String(text || '');
+  return CANNOT_COME.test(t) || CANNOT_COME_MORE.test(t);
 }
 
 /**
@@ -234,10 +239,33 @@ function parseSlotChoice(text, slots = []) {
  * ("השני", "הראשון"), or one of the offered hours.
  */
 const NOT_A_CHOICE = /\?|(?:^|\s)(?:לא|רגע|עצור|עצרי|אבל|למה|כמה)(?=$|[\s,.!])/;
+/** "27.10" from the slot label. */
+function dateOf(slot) {
+  const m = /(\d{1,2})\.(\d{1,2})/.exec(slot?.label || '');
+  return m ? { d: Number(m[1]), m: Number(m[2]) } : null;
+}
+
+/** A slot named by its date: "28.10", "28/10", "ב-28". */
+function slotByDate(text, slots = []) {
+  const t = String(text || '');
+  for (const mm of t.matchAll(/(?<!\d)(\d{1,2})[./](\d{1,2})(?![\d])/g)) {
+    const hit = slots.find(s => { const d = dateOf(s); return d && d.d === Number(mm[1]) && d.m === Number(mm[2]); });
+    if (hit) return hit;
+  }
+  return null;
+}
+
 function parseExplicitSlotChoice(text, slots = []) {
   const t = String(text || '').trim();
   if (!slots.length || !t || t.length > 60) return null;
+  // 26 Oct, צביה: "28.10 ב17:00" was booked as 27.10 — the date was never
+  // read, and 17:00 matched the first slot. A date is the most explicit
+  // choice there is.
+  const byDate = slotByDate(t, slots);
+  if (byDate) return byDate;
   if (NOT_A_CHOICE.test(t)) return null;
+  // "שבוע הבא ביום שלישי" is next week's Tuesday — not the Tuesday on offer.
+  if (/שבוע\s+הבא|next\s+week/i.test(t)) return null;
   const dayOf = (slot) => /יום ([^\s,]+)/.exec(slot.label)?.[1] || null;
   for (const slot of slots) {
     const day = dayOf(slot);
@@ -250,10 +278,58 @@ function parseExplicitSlotChoice(text, slots = []) {
     const day = dayOf(slot);
     if (day && new RegExp(`^${day}[.!]?$`).test(t)) return slot;
   }
+  // They named a day or a date we did NOT offer — that is a request for
+  // another time, never a pick of ours. 28 Oct, בן שמואל: "שבוע הבא ביום
+  // שלישי", then "ב-17:00 טוב" — booked into Wednesday 28.10.
+  if (namesOtherTime(t, slots)) return null;
+  // An hour alone is a choice only when exactly one offered slot has it.
+  const byHour = slots.filter(slot =>
+    new RegExp(`(?:בשעה\\s*|(?:^|\\s)ב[-־]?)${slot.hour}(?::00)?(?=$|[\\s,.!])`).test(t));
+  return byHour.length === 1 ? byHour[0] : null;
+}
+
+/**
+ * Does the message ask for a time that is not on the table — another day,
+ * another date, "next week", "only from the 27th"?
+ */
+function namesOtherTime(text, slots = []) {
+  const t = String(text || '');
+  if (/שבוע\s+הבא|בשבוע\s+הבא|next\s+week|רק\s+(?:מ|ב|אחרי)|אחרי\s+ה(?:בחירות|חגים|חג)|(?:^|\s)ואילך|בבוקר(?=$|[\s,.!])|רק\s+בוקר|morning/i.test(t)) return true;
+  const dayOf = (slot) => /יום ([^\s,]+)/.exec(slot.label)?.[1] || null;
+  const named = /(?:יום\s*|(?:^|\s)ב)(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)(?=$|[\s,.!])/.exec(t);
+  if (named && !slots.some(s => dayOf(s) === named[1])) return true;
+  for (const mm of t.matchAll(/(?<!\d)(\d{1,2})[./](\d{1,2})(?!\d)/g)) {
+    if (!slots.some(s => { const d = dateOf(s); return d && d.d === Number(mm[1]) && d.m === Number(mm[2]); })) return true;
+  }
+  return false;
+}
+
+/**
+ * A correction after a slot was already requested: "28, לא 27". The first
+ * number or day in the message that matches another offered slot wins.
+ */
+function slotMentioned(text, slots = []) {
+  const t = String(text || '');
+  const byDate = slotByDate(t, slots);
+  if (byDate) return byDate;
+  for (const mm of t.matchAll(/(?<!\d)(\d{1,2})(?![\d:.\/])/g)) {
+    const n = Number(mm[1]);
+    const hit = slots.find(s => dateOf(s)?.d === n);
+    if (hit) return hit;
+  }
+  const dayOf = (slot) => /יום ([^\s,]+)/.exec(slot.label)?.[1] || null;
   for (const slot of slots) {
-    if (new RegExp(`(?:בשעה\\s*|(?:^|\\s)ב[-־]?)${slot.hour}(?::00)?(?=$|[\\s,.!])`).test(t)) return slot;
+    const day = dayOf(slot);
+    if (day && new RegExp(`(?:יום\\s*|(?:^|\\s)ב)${day}(?=$|[\\s,.!])`).test(t)) return slot;
   }
   return null;
+}
+
+/** "יום שלישי, 27.10 בשעה 17:00" → "Tuesday 27.10 at 17:00". */
+const DAY_EN = { 'ראשון': 'Sunday', 'שני': 'Monday', 'שלישי': 'Tuesday', 'רביעי': 'Wednesday', 'חמישי': 'Thursday' };
+function labelEn(label = '') {
+  const m = /יום ([^\s,]+), (\d{1,2}\.\d{1,2}) בשעה (\d{1,2}:00)/.exec(label);
+  return m ? `${DAY_EN[m[1]] || m[1]} ${m[2]} at ${m[3]}` : label;
 }
 
 // ─── What the bot says ────────────────────────────────────────────────────────
@@ -284,7 +360,14 @@ function offerText(profile = {}, mode = 'office') {
 }
 
 /** Two concrete times. A choice beats "when suits you". */
-function slotPrompt(slots = [], mode = 'office') {
+function slotPrompt(slots = [], mode = 'office', lang = 'he') {
+  if (lang === 'en') {
+    if (!slots.length) return `Happy to arrange it — *when suits you this coming week, between 17:00 and 19:00?*`;
+    const whereEn = mode === 'video' ? 'a video meeting' : `a meeting at the office (Ashkenazi 21, Tel Aviv)`;
+    const optionsEn = slots.map(s => `*${labelEn(s.label)}*`).join(' or ');
+    return `I have ${whereEn} on ${optionsEn} — which suits you better?` +
+           (mode === 'video' ? '' : `\n\nHard to get to Tel Aviv? The same meeting works on Zoom.`);
+  }
   if (!slots.length) {
     return `אשמח לתאם — *מתי נוח לך בשבוע הקרוב, בין 17:00 ל-19:00?*`;
   }
@@ -292,11 +375,24 @@ function slotPrompt(slots = [], mode = 'office') {
   const options = slots.map(s => `*${s.label}*`).join('  או  ');
   // No greeting of its own: callers that need one add it, and two in a row
   // ("מצוין… מעולה…") reads like two bots talking.
-  return `יש לי ${where} ב${options} — מה מתאים לך יותר?`;
+  // Oct: most leads who said no to the office said so because of the drive —
+  // Haifa, Nahariya, abroad, 80 years old. Say the Zoom option up front, in
+  // the same breath, instead of after they refused.
+  return `יש לי ${where} ב${options} — מה מתאים לך יותר?` +
+         (mode === 'video' ? '' : `\n\nלא נוח להגיע לתל אביב? אותה פגישה אפשרית גם בזום.`);
 }
 
 /** After they pick. Nothing is promised: the office confirms. */
 function pendingText(profile = {}, slot, mode = 'office') {
+  if (profile.lang === 'en') {
+    const headEn = mode === 'video'
+      ? `Noted — *a video meeting on ${labelEn(slot.label)}*.`
+      : `Noted — *${labelEn(slot.label)}*, at the office, Ashkenazi 21, Tel Aviv.`;
+    const linkEn = mode === 'video' ? `A link will be sent to you before the meeting.`
+      : `🗺️ ${MAPS_URL}\n🚗 ${WAZE_URL}`;
+    return `${headEn}\n\nI'm passing it to Attorney Pudim for confirmation, and you'll get a message here once it's set.\n\n${linkEn}\n\n` +
+           `_Bring whatever documents you have — and if you have none, that's fine: tracing them is part of the work._`;
+  }
   const head = mode === 'video'
     ? `רשמתי — *פגישת וידאו ב${slot.label}*.`
     : `רשמתי — *${slot.label}*, במשרד ב${OFFICE.address}.`;
@@ -373,7 +469,7 @@ function isReadyForMeeting(profile = {}) {
   if (!hasRouteFact) return false;
 
   const m = profile.meeting || {};
-  if (m.status === 'requested' || m.status === 'confirmed') return false;
+  if (m.status === 'requested' || m.status === 'confirmed' || m.status === 'custom_request') return false;
   if ((m.declines || 0) >= 1) return false;          // asked once, said no — let it go
   // "Not before I know the price" — no more slots for three turns.
   if (profile.meetingDeferUntil && (profile.messageCount || 0) <= profile.meetingDeferUntil) return false;
@@ -395,7 +491,7 @@ module.exports = {
   OFFICE, MAPS_URL, WAZE_URL,
   MEETING_DAYS, MEETING_HOURS, MEETING_MINUTES, WHAT_TO_BRING,
   nextSlots, takenSlots, slotLabel,
-  signalsMeetingInterest, signalsMeetingRefusal, signalsMeetingDeferral, signalsCannotCome, parseSlotChoice, parseExplicitSlotChoice,
+  signalsMeetingInterest, signalsMeetingRefusal, signalsMeetingDeferral, signalsCannotCome, parseSlotChoice, parseExplicitSlotChoice, namesOtherTime, slotMentioned, labelEn,
   offerText, slotPrompt, pendingText, confirmedText, reminderText, bringList,
   isReadyForMeeting,
 };

@@ -57,6 +57,110 @@ function timeOptions() {
 const SLOTS_TOKEN = '{{MEETING_SLOTS}}';
 
 /**
+ * The lead's number is already known — it is the WhatsApp number they are
+ * writing from.
+ *
+ * Two weeks of live conversations (15–29 Oct): 14 of 35 leads answered every
+ * question, never "left details", and were never called. Every one of them had
+ * written from a mobile number we were holding. Meanwhile leads who DID want a
+ * call were asked "מה מספר הטלפון שלך?" — עדינה answered "אם היית מתאמץ קצת
+ * היית רואה שזה הנייד", and a lead who wrote "אפשר להתקשר אליי עכשיו" was
+ * asked for her number and never heard from again.
+ *
+ * So the ask is no longer "type your number" but "may he call you on this
+ * one?" — one tap (it goes out with buttons), and a yes is a lead.
+ */
+function localPhone(wa) {
+  const d = String(wa || '').replace(/\D/g, '');
+  if (!d) return '';
+  const local = d.startsWith('972') ? `0${d.slice(3)}` : d;
+  return /^05\d{8}$/.test(local) ? `${local.slice(0, 3)}-${local.slice(3, 6)}-${local.slice(6)}` : local;
+}
+
+const CONSENT_RE = /(?:יתקשר|יחזור\s+אליך|יחזור)\s+למספר\s+(?:הזה|שממנו\s+כתבת)|call\s+you\s+on\s+this\s+number/i;
+
+function consentAsk(profile = {}) {
+  const num = localPhone(profile.waPhone);
+  if (profile.lang === 'en') {
+    return `*May Attorney Pudim call you on this number${num ? ` (${num})` : ''}?* ` +
+           `A short call, free and with no obligation. If another number is better, just write it here.`;
+  }
+  // Gender-neutral on purpose: it goes out before we know who we are talking to.
+  return `*אפשר שעו״ד פודים יתקשר למספר הזה${num ? ` (${num})` : ''}?* ` +
+         `שיחה קצרה, ללא עלות וללא התחייבות. אם נוח יותר מספר אחר — אפשר לכתוב אותו כאן.`;
+}
+
+/** Is this message a yes to the consent ask? */
+const CONSENT_YES = /^(?:כן|כן\s*כן|בטח|בטוח|ודאי|בוודאי|אפשר|אפשרי|בסדר|אוקיי?|אוקי|ok|okay|yes|yep|sure|please|סבבה|יאללה|אשמח|בשמחה|מעולה|מצוין|מצויין|כמובן|תתקשר|תתקשרו|שיתקשר|שיחזור|נכון|כן\s+בבקשה|כן,.*|כן\s+.*|👍|🙏|👌)(?:[\s.!,]*(?:תודה|רבה|thanks|thank\s+you|🙂|😊|👍|🙏))*[\s.!,🙂😊👍🙏]*$/i;
+function isConsentYes(text) {
+  const t = String(text || '').trim();
+  if (!t || t.length > 60 || /\?/.test(t)) return false;
+  if (/(?:^|\s)לא(?=$|[\s,.!])/.test(t) && !/^כן/.test(t)) return false;
+  return CONSENT_YES.test(t);
+}
+
+/**
+ * "אפשר להתקשר אליי עכשיו" / "תחזרו אליי" — the lead asked for the call
+ * outright. That IS the consent; asking for a number after it loses the lead.
+ */
+const ASKS_FOR_CALL = /(?:[לח]?התקשר|ל?צלצל|לחזור|תתקשרו|תתקשר|תתקשרי|תצלצלו|תחזרו|תחזור|שיתקשר|שיחזור|שיצלצל)\s+(?:אליי|אלי|לי)(?=$|[\s,.!])|call\s+me|give\s+me\s+a\s+call|(?:get|have)\s+a\s+(?:phone\s+)?call\s+from\s+you/i;
+function asksForCall(text) {
+  const t = String(text || '');
+  if (/\?\s*$/.test(t) && /(?:האם|מתי|למה)\b/.test(t)) return false;   // "מתי יתקשר אליי?" is a question
+  if (/לא\s+(?:צריך|רוצה)\s+ש/.test(t)) return false;
+  return ASKS_FOR_CALL.test(t);
+}
+
+/**
+ * "אבדוק ואחזור", "אחפש מסמכים", "אשאל את הדוד", "נמשיך מחר".
+ *
+ * The single most common way a lead disappeared in Oct: nine conversations
+ * ended on a promise to go and look something up. The bot had just asked
+ * four questions about years and towns, the lead concluded he needs homework
+ * before anyone will talk to him, and the bot agreed ("קח את הזמן") and sent
+ * him off with a shopping list. None of them came back.
+ */
+const HOMEWORK_RE = /(?:^|\s)(?:אני\s+)?(?:א?בדוק|אברר|אחפש|נחפש|אאסוף|ארכז|אאתר|אשאל|נשאל|לשאול|אברר\s+עם|אעדכן|נעדכן|אבדוק\s+ואחזור|אחזור\s+(?:אליכם|אלייך|אליך|עם)|נחזור\s+(?:אליכם|אלייך|אליך)|אצור\s+קשר|אפנה\s+(?:אליכם\s+)?בהמשך|אתאם\s+בהמשך|נמשיך\s+מחר|נדבר\s+מחר|צריך\s+לבדוק|צריכה\s+לבדוק|צריך\s+לחפש|צריכה\s+לחפש|צריך\s+לברר|צריכה\s+לברר|אני\s+אבדוק|רגע\s+אשאל)(?=$|[\s,.!])|i(?:'|’)ll\s+(?:check|look|find\s+out|ask|get\s+back)|will\s+(?:check|try\s+to\s+send|get\s+back)|let\s+me\s+check/i;
+function signalsHomework(text) {
+  const t = String(text || '');
+  if (t.length > 300) return false;
+  return HOMEWORK_RE.test(t);
+}
+
+function homeworkReply(profile = {}) {
+  if (profile.lang === 'en') {
+    return `Of course. Just so you know — you don't need any documents or exact years to talk to ` +
+           `Attorney Pudim. Finding them is part of his work, and much of it can be traced without you ` +
+           `searching at home.\n\n${consentAsk(profile)}`;
+  }
+  return `בטח. וחשוב לדעת — *לא צריך מסמכים או שנים מדויקות כדי לדבר עם עו״ד פודים.* ` +
+         `לאתר אותם זה חלק מהעבודה שלו, והרבה מהמידע אפשר להשיג בלי לחפש בבית.\n\n${consentAsk(profile)}`;
+}
+
+/** "מבקש לפרוש", "לא מעוניין יותר" — a lead who asked to stop is not chased. */
+const WITHDRAW_RE = /מבקש(?:ת)?\s+לפרוש|(?:אני\s+)?פורש(?:ת)?\b|לא\s+מעוניינ(?:ת|ים)?\s+(?:יותר|כרגע|בזה|בשירות)|תוריד(?:ו)?\s+אותי|תפסיק(?:ו)?\s+לכתוב|לא\s+רלוונטי\s+(?:לי|עבורי)|not\s+interested|please\s+stop/i;
+function signalsWithdrawal(text) { return WITHDRAW_RE.test(String(text || '')); }
+
+function withdrawalReply(profile = {}) {
+  if (profile.lang === 'en') {
+    return `Of course, thank you for getting in touch. If you'd like to pick this up again — ` +
+           `just write here, or call the office: *${OFFICE_PHONE}* (Sun–Thu 09:00–18:00).`;
+  }
+  return `בסדר גמור, תודה שפנית. 🙏 אם זה יהיה רלוונטי בעתיד — אפשר פשוט לכתוב כאן, ` +
+         `או להתקשר למשרד: *${OFFICE_PHONE}* · ${HOURS}.`;
+}
+
+/** A message that only acknowledges: "תודה", "👍", "מצוין", "לילה טוב". */
+const PURE_ACK = /^(?:תודה(?:\s+רבה)?|תודה\s+לך|מצוין|מצויין|מעולה|אחלה|סבבה|בסדר|אוקיי?|אוקי|ok|okay|thanks?(?:\s+you)?|thx|great|perfect|נהדר|יופי|כן\s+תודה|לילה\s+טוב|ערב\s+טוב|יום\s+טוב|בוקר\s+טוב|שבוע\s+טוב|להתראות|ביי|נדבר|קיבלתי|הבנתי|ברור|👍|🙏|👌|🙂|😊|❤️|\[sticker\]|\[reaction\])(?:[\s.!,]*(?:תודה|רבה|לך|לכם|👍|🙏|🙂|😊|👌))*[\s.!,🙂😊👍🙏👌❤️]*$/i;
+function isPureAck(text) {
+  const t = String(text || '').trim();
+  if (!t) return true;
+  if (/^[\p{Extended_Pictographic}\p{Emoji_Component}\s‍️.!]+$/u.test(t)) return true;
+  return t.length <= 30 && PURE_ACK.test(t);
+}
+
+
+/**
  * The office meeting is the goal; the phone call is the fallback.
  *
  * The 15 Oct trainer run had eight leads and zero meeting offers: every close
@@ -149,8 +253,7 @@ function callClose(profile = {}, opts = {}) {
   // number — a promise of a call that could not happen. Without a phone, the
   // handoff has to ask for one (or leave the office number), not claim it.
   if ((variant === 'handoff' || variant === 'handoff_confirmed') && !hasPhone) {
-    return `אשמח שעו״ד פודים עצמו יחזור אליך — לא נציג, הוא עצמו. ` +
-           `*לאיזה מספר הוא יכול להתקשר?*\n\n` +
+    return `אשמח שעו״ד פודים עצמו יחזור אליך — לא נציג, הוא עצמו.\n\n${consentAsk(profile)}\n\n` +
            `לא נוח לך לדבר? אפשר לשלוח כאן צילומי מסמכים, והוא יענה לך בכתב. ` +
            `או להתקשר בעצמך: *${OFFICE_PHONE}* · ${HOURS}`;
   }
@@ -174,11 +277,8 @@ function callClose(profile = {}, opts = {}) {
 
   if (variant === 'ask_phone') {
     const lines = [
-      `אני מציע שנקבע שיחה קצרה עם עו״ד פודים עצמו — הוא יעבור על המקרה ויגיד ` +
-      `בדיוק מה המצב. *מה מספר הטלפון, ומתי נוח — ${when}?*`,
-
-      `הדבר הכי יעיל עכשיו זה שיחה קצרה עם עו״ד פודים. *אפשר מספר טלפון, ` +
-      `ומתי נוח — ${when}?*`,
+      `אני מציע שיחה קצרה עם עו״ד פודים עצמו — הוא יעבור על המקרה ויגיד בדיוק מה המצב.\n\n${consentAsk(profile)}`,
+      `הדבר הכי יעיל עכשיו זה שיחה קצרה עם עו״ד פודים.\n\n${consentAsk(profile)}`,
     ];
     return lines[seed % lines.length];
   }
@@ -204,7 +304,7 @@ function callClose(profile = {}, opts = {}) {
  * So every closing line passes through here: if the file has no number and the
  * lead has not refused to give one, the line carries the request.
  */
-const ASKS_FOR_PHONE = /(מספר\s+ה?טלפון|מה\s+המספר|טלפון\s+לחזרה|לאיזה\s+מספר|אפשר\s+מספר)/;
+const ASKS_FOR_PHONE = /(מספר\s+ה?טלפון|מה\s+המספר|טלפון\s+לחזרה|לאיזה\s+מספר|אפשר\s+מספר|phone\s+number|best\s+number|number\s+to\s+reach)/i;
 
 function needsPhoneAsk(profile = {}) {
   return !profile.clientPhone && !(profile.contactRefusals > 0);
@@ -213,7 +313,8 @@ function needsPhoneAsk(profile = {}) {
 function withPhoneAsk(text, profile = {}) {
   if (!text || !needsPhoneAsk(profile)) return text;
   if (ASKS_FOR_PHONE.test(text)) return text;
-  return `${text}\n\n*ולאיזה מספר שיחזור אליך?*`;
+  if (CONSENT_RE.test(text)) return text;
+  return `${text}\n\n${consentAsk(profile)}`;
 }
 
 /** Does this text already contain a real close? */
@@ -330,8 +431,14 @@ function signalsContactRefusal(text) {
 }
 
 /** Remove sentences asking for a phone number — for leads who refused. */
+function asksForPhone(text) {
+  const t = String(text || '');
+  return ASKS_FOR_PHONE.test(t) || /(?:תשאיר|תשאירי|השאר|השאירי)\s+(?:לי\s+)?(?:מספר|פרטים)|לאיזה\s+מספר|מה\s+(?:ה)?מספר\s+שלך/.test(t);
+}
+
 function stripPhoneAsks(text) {
-  const parts = String(text || '').split(/(?<=[.!?])\s+|\n+/);
+  const pre = String(text || '').split('\n').filter(l => !CONSENT_RE.test(l)).join('\n');
+  const parts = pre.split(/(?<=[.!?])\s+|\n+/);
   const kept = parts.filter(s => !(ASKS_FOR_PHONE.test(s) || /(?:תשאיר|תשאירי|השאר|השאירי)\s+(?:לי\s+)?(?:מספר|פרטים)|לאיזה\s+מספר|מה\s+(?:ה)?מספר\s+שלך/.test(s)));
   return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
@@ -378,7 +485,7 @@ const ENDING_PHRASES = [
 function contactLadder(profile = {}, attempt = 0) {
   const when = timeOptions();
   if (attempt <= 0) {
-    return `כדי שעו״ד פודים יחזור אליך — *מה מספר הטלפון, ומתי נוח: ${when}?*`;
+    return consentAsk(profile);
   }
   // A lead who will not give a number and will not take a call still has a way
   // forward: the documents. On 14 Oct מיכל asked for exactly this ("אני שולחת
@@ -413,10 +520,9 @@ function contactLadder(profile = {}, attempt = 0) {
  * differently each time, never the same sentence twice.
  */
 const PHONE_ASK_VARIANTS = [
-  p => `כדי שעו״ד פודים יחזור אליך — *מה מספר הטלפון, ומתי נוח: ${timeOptions()}?*`,
-  p => `${p.name ? `${p.name}, ` : ''}הכי מהיר לסגור את זה בשיחה קצרה. ` +
-       `*תשאיר מספר ועו״ד פודים יחזור אליך*, או תתקשר ישירות: *${OFFICE_PHONE}* · ${HOURS}.`,
-  p => `אני יכול להעביר את מה שסיכמנו כאן לעו״ד פודים — *לאיזה מספר שיחזור אליך?*`,
+  p => consentAsk(p),
+  p => `${p.name ? `${p.name}, ` : ''}הכי מהיר לסגור את זה בשיחה קצרה. ${consentAsk(p)}`,
+  p => `אני יכול להעביר את מה שסיכמנו כאן לעו״ד פודים. ${consentAsk(p)}`,
 ];
 
 function nextContactAsk(profile = {}, opts = {}) {
@@ -424,6 +530,7 @@ function nextContactAsk(profile = {}, opts = {}) {
   // Only a real refusal steps the ladder down.
   if (refusals > 0) return contactLadder(profile, refusals);
   if (profile.clientPhone) return callClose(profile, { variant: 'ask_time', seed: opts.seed || 0 });
+  if (profile.lang === 'en') return consentAsk(profile);
   const i = (opts.seed || 0) % PHONE_ASK_VARIANTS.length;
   return PHONE_ASK_VARIANTS[i](profile);
 }
@@ -438,6 +545,9 @@ function nextContactAsk(profile = {}, opts = {}) {
  * sales script and reach a human the same minute.
  */
 const MISSED_CALLBACK = [
+  // 27 Oct, צביה: "הוא לא צלצל כנקבע" — answered "רשום. אם משהו משתנה".
+  /(?:לא|טרם)\s+(?:צלצל|צילצל|התקשר|חזר|דיבר)(?:ו)?\s*(?:אליי?|איתי)?\s*(?:כנקבע|כמו\s+שקבענו|כפי\s+שסוכם|כפי\s+שנקבע|עד\s+עכשיו|היום)?/,
+  /(?:didn(?:'|’)t|did\s+not|never)\s+call/i,
   /לא\s+חזר(?:תם|ו|ת)\s*(?:אליי?|אלינו)?/,
   /אף\s+אחד\s+לא\s+(?:התקשר|חזר|ענה|יצר\s+קשר)/,
   /עדיין\s+לא\s+(?:חזרו|חזרתם|דיברנו|התקשרתם|שוחחנו)/,
@@ -486,6 +596,17 @@ function signalsEnding(text) {
 }
 
 module.exports = {
+  localPhone,
+  consentAsk,
+  CONSENT_RE,
+  isConsentYes,
+  asksForCall,
+  signalsHomework,
+  homeworkReply,
+  signalsWithdrawal,
+  withdrawalReply,
+  isPureAck,
+  asksForPhone,
   priceRangeAnswer,
   priceRangeReminder,
   SLOTS_TOKEN,

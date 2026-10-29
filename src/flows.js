@@ -157,6 +157,32 @@ const BACK_TO_MENU = [
 ];
 const OPT_OUT = ['הסר', 'הסר אותי', 'תפסיקו', 'לא מעוניין', 'stop', 'unsubscribe', 'תפסיק לשלוח'];
 
+// ─── What the lead already told us about timing ──────────────────────────────
+//
+// Oct: רון wrote "רק מה-27/10 ואילך", gave her number, and was offered 21.10
+// and 22.10 again. דינה asked to talk by phone first, gave her number, and got
+// office slots. עדינה wrote "רק בבוקר" and got 17:00. The moment a number
+// lands is not a reason to forget what was said a minute earlier.
+function statedPreference(session, text, p = {}) {
+  const userTexts = (session.history || []).filter(h => h.role === 'user').map(h => h.text).slice(-8);
+  if (text && !userTexts.includes(text)) userTexts.push(text);
+  const joined = userTexts.join('\n');
+  const phonePref = p.meetingDeferKind === 'phone' ||
+    /(?:לשוחח|שיחת\s+טלפון|שיחה\s+טלפונית|בטלפון|phone\s+call|a\s+call\b)/i.test(joined);
+  const timing = [...userTexts].reverse().find(t => meeting.namesOtherTime(t, []) &&
+    !/^\s*(?:יום\s+)?(?:ראשון|שני|שלישי|רביעי|חמישי)\s*$/.test(t)) || null;
+  const cannotCome = userTexts.some(t => meeting.signalsCannotCome(t));
+  const deferred = !!(p.meetingDeferUntil && (p.messageCount || 0) <= p.meetingDeferUntil);
+  return {
+    phonePref, cannotCome, deferred,
+    timing: timing ? String(timing).trim().slice(0, 120) : null,
+    blocksSlots: phonePref || !!timing || deferred,
+  };
+}
+
+/** "דינה, " / "" — never "null, ". */
+function nameComma(p = {}) { return p.name ? `${p.name}, ` : ''; }
+
 // ─── Session helpers ──────────────────────────────────────────────────────────
 
 function loadSession(phone) {
@@ -248,6 +274,9 @@ function prepareMeetingOffer(phone, session, text) {
       && !/^לא נוח להגיע\? אותה פגישה/.test(pp)).join('\n\n');
   }
 
+  if (out.includes(closing.SLOTS_TOKEN) && mtg.status === 'custom_request') {
+    out = out.split(/\n{2,}/).filter(pp => !pp.includes(closing.SLOTS_TOKEN)).join('\n\n');
+  }
   if (out.includes(closing.SLOTS_TOKEN)) {
     mtg.closeOffers = (mtg.closeOffers || 0) + 1;
     mtg.lastOfferTurn = session.profile?.messageCount || 0;
@@ -263,9 +292,14 @@ function prepareMeetingOffer(phone, session, text) {
       storage.logEvent(phone, 'meeting_offered', {
         at: 'close', mode, slots: slots.map(s => s.iso),
       });
-      out = out.split(closing.SLOTS_TOKEN).join(meeting.slotPrompt(slots, mode));
+      let prompt = meeting.slotPrompt(slots, mode, p.lang);
+      // The close may already carry its own Zoom line — say it once.
+      if (/אותה פגישה אפשרית גם בזום|same meeting works on Zoom/i.test(out.replace(closing.SLOTS_TOKEN, ''))) {
+        prompt = prompt.replace(/\n\n(?:לא נוח להגיע לתל אביב\? אותה פגישה אפשרית גם בזום\.|Hard to get to Tel Aviv\? The same meeting works on Zoom\.)$/, '');
+      }
+      out = out.split(closing.SLOTS_TOKEN).join(prompt);
     } else {
-      out = out.split(closing.SLOTS_TOKEN).join(meeting.slotPrompt([], mode));
+      out = out.split(closing.SLOTS_TOKEN).join(meeting.slotPrompt([], mode, p.lang));
       if (!mtg.status) { mtg.status = 'offered'; mtg.mode = mode; mtg.offeredAt = new Date().toISOString(); }
     }
   } else if (!mtg.status && meeting.mentionsMeetingOffer(out)) {
@@ -280,6 +314,21 @@ function prepareMeetingOffer(phone, session, text) {
 async function reply(phone, session, text) {
   if (!text) return false;
   text = prepareMeetingOffer(phone, session, text);
+  const prof = session.profile || {};
+  // "May he call you on this number?" is a yes/no question asked mostly of
+  // people in their 70s and 80s. One tap beats typing.
+  if (closing.CONSENT_RE.test(text) && !prof.clientPhone && text.length < 1000) {
+    const en = prof.lang === 'en';
+    const sent = await wa.sendButtons(phone, text, [
+      { id: 'cb_yes', title: en ? 'Yes, call me' : 'כן, שיחזור אליי' },
+      { id: 'cb_no', title: en ? 'Not now' : 'לא עכשיו' },
+    ]).catch(() => false);
+    if (sent) {
+      pushHistory(session, 'assistant', text);
+      prof.lastOutboundAt = new Date().toISOString();
+      return true;
+    }
+  }
   const parts = wa.splitMessage(text);
   let ok = true;
   for (const [i, part] of parts.entries()) {
@@ -426,6 +475,10 @@ async function handleMessage(phone, message) {
 
   const { session, isNew } = loadSession(phone);
   const profile = session.profile;
+  if (!profile.waPhone) profile.waPhone = phone;
+  // The name on the lead's WhatsApp profile — a fallback for the office's call
+  // list when a lead agrees to a call without typing a name.
+  if (message._waName && !profile.waName) profile.waName = String(message._waName).slice(0, 40);
 
   // ── Extract text / button id ──────────────────────────────────────────────
   let text = '';
@@ -544,14 +597,12 @@ async function handleMessage(phone, message) {
                   `go over it himself. \u{1F4C4}\n\nYou can send more if you have them.`;
     let ack = profile.lang === 'en' ? ackEn : ackHe;
 
-    if (!profile.name) {
-      ack += profile.lang === 'en'
-        ? `\n\nSo he can match the files to you — *what is your full name?*`
-        : `\n\nכדי שיֵדע לקשר את המסמכים אליך — *מה שמך המלא?*`;
-    } else if (!profile.clientPhone && !(profile.contactRefusals > 0)) {
-      ack += profile.lang === 'en'
-        ? `\n\nAnd what number should he call you on, ${profile.name}?`
-        : `\n\nולאיזה מספר שיחזור אליך, ${profile.name}?`;
+    // 28 Oct, בן שמואל: five photos, and after each one "מה שמך המלא?" —
+    // three times. One ask, the one-tap kind, and only once.
+    const askedAlready = (session.history || []).slice(-6)
+      .some(m => m.role === 'assistant' && closing.CONSENT_RE.test(m.text || ''));
+    if (!profile.clientPhone && !(profile.contactRefusals > 0) && !askedAlready) {
+      ack += `\n\n${closing.consentAsk(profile)}`;
     }
 
     await reply(phone, session, ack);
@@ -700,6 +751,30 @@ async function handleMessage(phone, message) {
     return;
   }
 
+  // ── Stickers, reactions, a lone 👍 ────────────────────────────────────────
+  // 21 and 25 Oct: two thumbs-up after "רשמתי" were answered "נראה שההודעה
+  // נשלחה חלקית 🙂 מה רצית לשאול?" — and a sticker got "סגור 👍" twice.
+  // An emoji is an acknowledgement. Say nothing, unless it answers our
+  // "may he call you on this number?" — then it is a yes.
+  {
+    const raw = (text || '').trim();
+    const emojiOnly = msgType === 'sticker' || msgType === 'reaction' ||
+      (raw && /^[\p{Extended_Pictographic}\p{Emoji_Component}\s\u200d\ufe0f.!]+$/u.test(raw) && !/\d/.test(raw));
+    if (emojiOnly && !isNew && session.state !== 'NEW') {
+      const lastBotMsg = [...(session.history || [])].reverse()
+        .find(m => m.role === 'assistant')?.text || '';
+      const positive = /👍|👌|🙏|❤|😊|🙂|✅/.test(raw) || msgType === 'reaction';
+      if (positive && msgType !== 'reaction' && !profile.clientPhone &&
+          closing.CONSENT_RE.test(lastBotMsg)) {
+        await handleFreeText(phone, session, 'כן');
+        return;
+      }
+      console.log(`🤐 [${phone}] ${msgType === 'text' ? 'emoji' : msgType} — acknowledgement, no reply`);
+      save(phone, session);
+      return;
+    }
+  }
+
   // ── A message with nothing in it ──────────────────────────────────────────
   // One or two characters carry no question, no fact and no intent. Sending
   // them through the sales pipeline produced a full sales turn every morning
@@ -717,9 +792,6 @@ async function handleMessage(phone, message) {
   const trimmed = (text || '').trim();
   if (trimmed && trimmed.length <= 2 && !/^\d+$/.test(trimmed)
       && !MEANINGFUL_SHORT.has(trimmed.toLowerCase())) {
-    profile.lastInboundAt = new Date().toISOString();
-    profile.messageCount = (profile.messageCount || 0) + 1;
-    pushHistory(session, 'user', text);
     const nudges = [
       'נראה שההודעה נשלחה חלקית 🙂 מה רצית לשאול?',
       'לא הגיע לי טקסט מלא — אפשר לכתוב שוב?',
@@ -828,7 +900,23 @@ async function handleStart(phone, session, opts = {}) {
         ? experiment.greetingOnly(profile.lang)
         : experiment.opening(profile.openingVariant, profile.lang));
 
-  await reply(phone, session, welcome);
+  // The opening question is answered with one tap. Most leads come from the
+  // ad's "אפשר לקבל מידע נוסף על זה?" and many are elderly; a button they can
+  // press is an answer they do not have to compose.
+  let sentAsButtons = false;
+  if (!returning && !opensWithQuestion) {
+    const en = profile.lang === 'en';
+    sentAsButtons = await wa.sendButtons(phone, welcome, en
+      ? [{ id: 'gen_parent', title: 'A parent' }, { id: 'gen_grand', title: 'A grandparent' },
+         { id: 'gen_great', title: 'Great-grandparent' }]
+      : [{ id: 'gen_parent', title: 'הורה' }, { id: 'gen_grand', title: 'סבא / סבתא' },
+         { id: 'gen_great', title: 'סבא-רבא / לא בטוח' }]).catch(() => false);
+    if (sentAsButtons) {
+      pushHistory(session, 'assistant', welcome);
+      profile.lastOutboundAt = new Date().toISOString();
+    }
+  }
+  if (!sentAsButtons) await reply(phone, session, welcome);
   save(phone, session);
 
   storage.logEvent(phone, 'stage_changed', { stage: profile.stage, from: 'NEW_LEAD' });
@@ -855,6 +943,34 @@ async function handleButton(phone, session, buttonId) {
     interest_cost:            () => handleInterestCost(phone, session),
     interest_romanian_course: () => handleInterestRomanianCourse(phone, session),
   };
+
+  // Opening: who in the family was born in Romania.
+  if (/^gen_/.test(buttonId)) {
+    const he = { gen_parent: 'הורה', gen_grand: 'סבא או סבתא', gen_great: 'סבא-רבא או סבתא-רבתא, לא בטוח' };
+    const en = { gen_parent: 'A parent', gen_grand: 'A grandparent', gen_great: 'A great-grandparent, not sure' };
+    const said = (profile.lang === 'en' ? en : he)[buttonId] || buttonId;
+    pushHistory(session, 'user', said);
+    storage.logEvent(phone, 'opening_button', { option: buttonId });
+    await handleFreeText(phone, session, said);
+    return;
+  }
+  // "May he call you on this number?"
+  if (buttonId === 'cb_yes') {
+    pushHistory(session, 'user', profile.lang === 'en' ? 'Yes, call me' : 'כן, שיחזור אליי');
+    await handleFreeText(phone, session, 'כן', { consent: true });
+    return;
+  }
+  if (buttonId === 'cb_no') {
+    pushHistory(session, 'user', profile.lang === 'en' ? 'Not now' : 'לא עכשיו');
+    profile.contactRefusals = (profile.contactRefusals || 0) + 1;
+    storage.logEvent(phone, 'contact_refused', { n: profile.contactRefusals, via: 'button' });
+    await reply(phone, session, profile.lang === 'en'
+      ? `No problem at all. 🙂 If it helps, you can send photos of any documents here and ` +
+        `Attorney Pudim will reply in writing — or call the office whenever suits you: *${closing.OFFICE_PHONE}* (Sun–Thu 09:00–18:00).`
+      : closing.contactLadder(profile, 1));
+    save(phone, session);
+    return;
+  }
 
   const fn = handlers[buttonId];
   if (fn) {
@@ -985,6 +1101,16 @@ async function handleFreeText(phone, session, text, opts = {}) {
     if (deep) analysis = deep;
   }
 
+  // A phone number is only ever one the customer typed in THIS message. The
+  // model reads our own consent question ("…למספר הזה (050-…)?") in the
+  // history and would otherwise file it as the customer's answer — a lead
+  // with no consent at all.
+  const pu = analysis.profileUpdates || {};
+  if (pu.clientPhone) {
+    const digits = String(pu.clientPhone).replace(/\D/g, '').slice(-9);
+    if (!digits || !String(text).replace(/\D/g, '').includes(digits)) delete pu.clientPhone;
+  }
+
   // 2. Merge everything we learned into the profile
   const hadContact = leadProfile.hasContactDetails(profile);
   const before = { stage: profile.stage, score: profile.buyingIntent };
@@ -997,6 +1123,40 @@ async function handleFreeText(phone, session, text, opts = {}) {
     conversationSummary: analysis.summary || profile.conversationSummary,
   });
   const p = session.profile;
+
+  // ── "Yes, he can call me on this number" ─────────────────────────────────
+  const lastBotText = [...(session.history || [])].reverse()
+    .find(m => m.role === 'assistant')?.text || '';
+  const consentPending = !p.clientPhone && closing.CONSENT_RE.test(lastBotText);
+  const callMe = closing.asksForCall(text);
+  if (!p.clientPhone && !p.notEligible && !p.optedOut &&
+      (((consentPending || opts.consent) && closing.isConsentYes(text)) || callMe)) {
+    p.clientPhone = closing.localPhone(p.waPhone || phone);
+    p.callbackConsent = true;
+    storage.logEvent(phone, 'callback_consent', { explicit: !!callMe });
+    console.log(`📞 [${phone}] agreed to a call on ${p.clientPhone}`);
+    // 18 Oct: "אפשר להתקשר אליי עכשיו" — asked for her number, never called.
+    if (callMe && /עכשיו|כעת|מיד|בהקדם|\bnow\b|asap/i.test(text)) {
+      p.callNow = true;
+      handoff.notifyHandoff(p, 'הלקוח/ה ביקש/ה שיתקשרו עכשיו', { urgent: true })
+        .catch(e => console.warn('⚠️ call-now notify:', e.message));
+    }
+  } else if (consentPending && /^(?:לא|לא\s+עכשיו|לא\s+תודה|עדיין\s+לא|no|not\s+now)(?=$|[\s,.!])/i.test(String(text).trim())) {
+    p.contactRefusals = (p.contactRefusals || 0) + 1;
+    storage.logEvent(phone, 'contact_refused', { n: p.contactRefusals, via: 'consent_no' });
+  }
+
+  // ── "מבקש לפרוש" ─────────────────────────────────────────────────────────
+  // 22 Oct: a lead wrote exactly that and got one more pitch and a request
+  // for his number. A lead who asks to stop gets a thank-you and the door.
+  if (closing.signalsWithdrawal(text) && !/\?/.test(text)) {
+    p.withdrew = true;
+    p.followUpsSuppressed = true;
+    storage.logEvent(phone, 'withdrew', { text: String(text).slice(0, 120) });
+    await reply(phone, session, closing.withdrawalReply(p));
+    save(phone, session);
+    return;
+  }
 
   if (before.stage !== p.stage) {
     storage.logEvent(phone, 'stage_changed', { from: before.stage, to: p.stage });
@@ -1080,16 +1240,24 @@ async function handleFreeText(phone, session, text, opts = {}) {
     // They already picked a slot and this message completes the details:
     // confirm the request — do not offer new slots and do not ask "when".
     if (pending.status === 'requested' && pending.slotLabel) {
-      await reply(phone, session,
-        `🎉 *תודה, ${p.name || ''}!*\n\nהבקשה לפגישה ב*${pending.slotLabel}* אצלנו. ` +
-        `עו״ד פודים יאשר אותה, ותקבל הודעה כאן בוואטסאפ.\n\n` +
+      await reply(phone, session, p.lang === 'en'
+        ? `🎉 Thank you${p.name ? `, ${p.name}` : ''}! Your request for *${meeting.labelEn(pending.slotLabel)}* is in. ` +
+          `Attorney Pudim will confirm it and you'll get a message here.\n\nIf anything changes — *${closing.OFFICE_PHONE}*.`
+        : `🎉 *תודה${p.name ? `, ${p.name}` : ''}!*\n\nהבקשה לפגישה ב*${pending.slotLabel}* אצלנו. ` +
+        `עו״ד פודים יאשר אותה, ותתקבל הודעה כאן בוואטסאפ.\n\n` +
         `אם משהו משתנה — *${closing.OFFICE_PHONE}*.`);
       await maybeSaveLead(phone, session);
       save(phone, session);
       return;
     }
 
-    const canBook = !['requested', 'confirmed'].includes(pending.status)
+    const pref = statedPreference(session, text, p);
+    if (pref.cannotCome) pending.mode = 'video';
+    if (pref.timing) p.requestedTiming = pref.timing;
+    if (pref.phonePref) p.prefersPhone = true;
+    // An urgent "call me now" is not answered with evening slots.
+    const canBook = !['requested', 'confirmed', 'custom_request'].includes(pending.status)
+                    && !pref.blocksSlots && !p.callNow && !timeAgreed
                     && (pending.accepted || meeting.isReadyForMeeting(p));
 
     if (canBook) {
@@ -1103,8 +1271,9 @@ async function handleFreeText(phone, session, text, opts = {}) {
         storage.logEvent(phone, 'meeting_offered', {
           at: 'lead_captured', mode: pending.mode, slots: slots.map(s => s.iso),
         });
-        await reply(phone, session,
-          `🎉 מצוין, ${p.name} — רשמתי.\n\n${meeting.slotPrompt(slots, pending.mode)}`);
+        await reply(phone, session, p.lang === 'en'
+          ? `🎉 Great${p.name ? `, ${p.name}` : ''} — noted.\n\n${meeting.slotPrompt(slots, pending.mode, 'en')}`
+          : `🎉 מצוין${p.name ? `, ${p.name}` : ''} — רשמתי.\n\n${meeting.slotPrompt(slots, pending.mode)}`);
         await maybeSaveLead(phone, session);
         save(phone, session);
         return;
@@ -1116,12 +1285,28 @@ async function handleFreeText(phone, session, text, opts = {}) {
     // what made a lead on 5 Sep repeat "בבוקר" three times — and what made
     // פרץ רוב, who had just written "אחהצ בסביבות 18", get the identical
     // question back one minute later on 4 Oct.
-    const ask = timeAgreed
-      ? `נתראה במועד שסיכמנו. אם משהו משתנה — *${closing.OFFICE_PHONE}*.`
-      : closing.nextContactAsk(p);
+    const en = p.lang === 'en';
+    const ask = p.callNow
+      ? (en ? `I've marked it urgent for Attorney Pudim. If you'd rather call yourself: *${closing.OFFICE_PHONE}* (Sun–Thu 09:00–18:00).`
+            : `סימנתי לעו״ד פודים שזה דחוף. ואם נוח להתקשר בעצמך: *${closing.OFFICE_PHONE}* · ${closing.HOURS}.`)
+      : timeAgreed
+        ? (en ? `We'll speak at the time we agreed. If anything changes — *${closing.OFFICE_PHONE}*.`
+              : `נדבר במועד שסיכמנו. אם משהו משתנה — *${closing.OFFICE_PHONE}*.`)
+        : pref.timing
+          ? (en ? `I've noted what you asked for (“${pref.timing}”) and he'll call to arrange it accordingly.`
+                : `רשמתי את מה שביקשת («${pref.timing}»), והוא יחזור אליך לתאם בהתאם.`)
+          : (en ? `*When suits you for the call — Sunday to Thursday, morning or afternoon?*`
+                : closing.nextContactAsk(p));
+    if (pref.timing || p.callNow || pref.phonePref) {
+      handoff.notifyHandoff(p, p.callNow ? 'ביקש/ה שיתקשרו עכשיו'
+        : `השאיר/ה פרטים${pref.timing ? ` — ביקש/ה: «${pref.timing}»` : ''}${pref.phonePref ? ' · מעדיף/ה טלפון' : ''}${pref.cannotCome ? ' · לא יכול/ה להגיע לת״א' : ''}`,
+        { urgent: !!p.callNow }).catch(e => console.warn('⚠️ preference notify:', e.message));
+    }
     await reply(phone, session, isCourse
-      ? `🎉 *תודה, ${p.name}!*\n\nקיבלנו את הפרטים לגבי *קורס הרומנית B1*.\n\n${ask}`
-      : `🎉 *מצוין, ${p.name}!*\n\nהפרטים אצלנו ועו״ד פודים יחזור אליך אישית.\n\n${ask}\n\n` +
+      ? `🎉 *תודה${p.name ? `, ${p.name}` : ''}!*\n\nקיבלנו את הפרטים לגבי *קורס הרומנית B1*.\n\n${ask}`
+      : en
+        ? `🎉 *Thank you${p.name ? `, ${p.name}` : ''}!*\n\nAttorney Pudim will call you himself.\n\n${ask}`
+        : `🎉 *תודה${p.name ? `, ${p.name}` : ''}!*\n\nעו״ד פודים יחזור אליך אישית.\n\n${ask}\n\n` +
         `_השיחה ללא התחייבות — הערכת סיכוי, מה צריך לאתר, וטווחי זמן ועלות למקרה שלך._`
     );
     await maybeSaveLead(phone, session);
@@ -1137,8 +1322,25 @@ async function handleFreeText(phone, session, text, opts = {}) {
   //      through to the normal pipeline — including "I'm abroad", which the
   //      decision layer turns into a video meeting.
   const mtg = leadProfile.ensureMeeting(p);
+  // "I can't get to Tel Aviv" turns every later offer — and any pick — into a
+  // video meeting. Read it BEFORE the pick: ויטוריו (26 Oct) said he could not
+  // come, then "מחר יום שלישי זה בסדר", and was booked into the office.
+  if (meeting.signalsCannotCome(text)) { mtg.mode = 'video'; p.remoteOnly = true; }
   if (mtg.status === 'slots_proposed' && (mtg.offered || []).length) {
     const picked = meeting.parseExplicitSlotChoice(text, mtg.offered);
+    if (!picked && meeting.namesOtherTime(text, mtg.offered)) {
+      // Another day or week entirely. Record it, tell the office, and stop
+      // matching later replies against slots the lead already passed on.
+      mtg.status = 'custom_request';
+      mtg.customRequest = String(text).slice(0, 160);
+      mtg.offered = [];
+      p.requestedTiming = mtg.customRequest;
+      storage.logEvent(phone, 'meeting_custom_request', { text: mtg.customRequest });
+      if (leadProfile.hasContactDetails(p)) {
+        handoff.notifyHandoff(p, `ביקש/ה מועד אחר לפגישה (${mtg.mode === 'video' ? 'וידאו' : 'משרד'}): «${mtg.customRequest}»`)
+          .catch(e => console.warn('⚠️ custom-slot notify:', e.message));
+      }
+    }
     if (picked) {
       mtg.status = 'requested';
       mtg.slotIso = picked.iso;
@@ -1156,13 +1358,9 @@ async function handleFreeText(phone, session, text, opts = {}) {
       // states so the answer is captured deterministically — on 16 Oct a lead
       // who typed his name after "לאיזה מספר?" was asked for his name again.
       let body = meeting.pendingText(p, picked, mtg.mode);
-      if (!p.name) {
-        session.state = 'LEAD_NAME';
-        body += `\n\nכדי שהמשרד יאשר לך את הפגישה — *מה השם המלא ומספר הטלפון שלך?*`;
-      } else if (!p.clientPhone) {
-        session.state = 'LEAD_PHONE';
-        body += `\n\n${p.name}, *לאיזה מספר לשלוח את אישור הפגישה?*`;
-      }
+      // The number is the one they are writing from — ask to use it, do not
+      // ask them to type it.
+      if (!p.clientPhone) body += `\n\n${closing.consentAsk(p)}`;
       await reply(phone, session, body);
 
       await maybeSaveLead(phone, session);
@@ -1173,16 +1371,68 @@ async function handleFreeText(phone, session, text, opts = {}) {
     }
   }
 
+  // A time constraint stated before any slot was on the table — "רק מה-27/11
+  // ואילך", "רק בבוקר", "שבוע הבא". 29 Oct live test: the model acknowledged
+  // it and the system appended the next two evenings underneath anyway.
+  if (!['slots_proposed', 'requested', 'confirmed', 'custom_request'].includes(mtg.status)
+      && meeting.namesOtherTime(text, []) && !asksSomething) {
+    mtg.status = 'custom_request';
+    mtg.customRequest = String(text).slice(0, 160);
+    mtg.offered = [];
+    p.requestedTiming = mtg.customRequest;
+    storage.logEvent(phone, 'meeting_custom_request', { text: mtg.customRequest, before: 'offer' });
+    if (leadProfile.hasContactDetails(p)) {
+      handoff.notifyHandoff(p, `ביקש/ה מועד: «${mtg.customRequest}»`)
+        .catch(e => console.warn('⚠️ timing notify:', e.message));
+    }
+  }
+
+  // 3b¾. A correction to the slot already requested.
+  if (mtg.status === 'requested' && (mtg.offered || []).length && !/\?/.test(text)) {
+    const alt = meeting.slotMentioned(text, mtg.offered);
+    if (alt && alt.iso !== mtg.slotIso) {
+      mtg.slotIso = alt.iso;
+      mtg.slotLabel = alt.label;
+      mtg.requestedAt = new Date().toISOString();
+      storage.logEvent(phone, 'meeting_corrected', { slot: alt.iso });
+      handoff.notifyMeetingRequest(p, alt, mtg.mode)
+        .catch(e => console.warn('⚠️ meeting correction notify:', e.message));
+      await reply(phone, session, p.lang === 'en'
+        ? `Corrected — *${mtg.mode === 'video' ? 'video meeting, ' : ''}${meeting.labelEn(alt.label)}*. Sorry about that. ` +
+          `Attorney Pudim will confirm it and you'll get a message here.`
+        : `תיקנתי — *${mtg.mode === 'video' ? 'פגישת וידאו, ' : ''}${alt.label}*. סליחה על הטעות. 🙏 ` +
+          `עו״ד פודים יאשר את המועד, ותתקבל הודעה כאן.`);
+      save(phone, session);
+      return;
+    }
+  }
+
+  // 3b⅞. "אבדוק ואחזור" — the moment leads were lost in October.
+  if (closing.signalsHomework(text) && !p.clientPhone && !(p.contactRefusals > 0)
+      && !p.notEligible && !asksSomething && !session.homeworkOffered) {
+    session.homeworkOffered = p.messageCount || 1;
+    storage.logEvent(phone, 'homework_exit', { text: String(text).slice(0, 120) });
+    await reply(phone, session, closing.homeworkReply(p));
+    save(phone, session);
+    return;
+  }
+
   // 3c. Everything is done — details captured and a time agreed. From here the
   //     only correct reply is a short acknowledgement. On 5 Sep the bot instead
   //     re-sent the consultation blurb twice and then offered an email address,
   //     after the lead had already booked Sunday morning.
-  if (leadProfile.hasContactDetails(p) && timeAgreed && !asksSomething) {
-    const acks = [
-      'מצוין, רשמתי. 👍 נדבר אז.',
-      'סגור. 👍 עו״ד פודים יחזור אליך במועד שסיכמנו.',
-      `רשום. אם משהו משתנה — *${closing.OFFICE_PHONE}*.`,
-    ];
+  //
+  //     But only for a message that IS an acknowledgement. On 26–27 Oct the
+  //     same canned line answered "28, לא 27", "הסבים לא עלו לארץ", "אין לי
+  //     שום מסמך", a family history, and "הוא לא צלצל כנקבע". Anything with
+  //     content goes to the pipeline, which is told the call is arranged.
+  const arranged = leadProfile.hasContactDetails(p) && timeAgreed && !asksSomething;
+  if (arranged && closing.isPureAck(text)) {
+    const acks = p.lang === 'en'
+      ? ['Great, noted. 👍', `Noted. If anything changes — *${closing.OFFICE_PHONE}*.`]
+      : ['מצוין, רשמתי. 👍 נדבר אז.', `רשום. אם משהו משתנה — *${closing.OFFICE_PHONE}*.`];
+    // One acknowledgement is enough; a second "תודה" needs no answer.
+    if (acks.some(a => a === lastBotText)) { save(phone, session); return; }
     await reply(phone, session, acks[(p.messageCount || 0) % acks.length]);
     save(phone, session);
     return;
@@ -1254,6 +1504,21 @@ async function handleFreeText(phone, session, text, opts = {}) {
   p.nextAction = decision.action;
   console.log(`🎯 [${phone}] action=${decision.action} (${decision.reason})`);
 
+  if (arranged || mtg.status === 'custom_request' || p.callNow) {
+    decision.offerMeeting = false;
+    decision.proposeSlots = false;
+    decision.closeToCall = false;
+    decision.directiveSuffix = (decision.directiveSuffix || '') + (arranged
+      ? ' ⚠️ השיחה/הפגישה עם הלקוח כבר מתואמת והפרטים אצלנו. אל תציע מועד, אל תבקש שם או טלפון ואל תסגור.' +
+        ' התייחס בדיוק למה שכתב עכשיו: אם מסר מידע — הודה ואמור שזה יועבר לעו״ד פודים; אם תיקן פרט — אשר את התיקון;' +
+        ' אם התלונן שלא חזרו אליו — התנצל ואמור שזה הועבר לעו״ד פודים כדחוף. בלי להבטיח שעה.'
+      : mtg.status === 'custom_request'
+        ? ` ⚠️ הלקוח ביקש מועד אחר לפגישה («${mtg.customRequest}»). אמור שרשמת את הבקשה ועו״ד פודים יחזור אליו לתאם.` +
+          ' אל תציע מועדים אחרים ואל תשאל שוב על שעה.' +
+          (p.clientPhone ? '' : ' סיים בשאלה אם אפשר שעו״ד פודים יתקשר למספר הזה כדי לתאם.')
+        : ' ⚠️ הלקוח ביקש שיתקשרו אליו עכשיו וזה הועבר לעו״ד פודים כדחוף. אל תציע פגישה ואל תבקש פרטים.');
+  }
+
   // 4b. Record where the meeting stands, and fill in the real slots.
   if (decision.offerMeeting) {
     mtg.status = 'offered';
@@ -1263,8 +1528,12 @@ async function handleFreeText(phone, session, text, opts = {}) {
   }
   if (decision.meetingAccepted) mtg.accepted = true;
   if (decision.meetingMode) mtg.mode = decision.meetingMode;
+  // Once a lead said they cannot come in — far away, abroad, unwell — every
+  // later offer is a video one. (יהודה, Kiryat Tivon, 22 Oct: offered the
+  // office four times.)
+  if (p.remoteOnly) mtg.mode = 'video';
   if (decision.proposeSlots) {
-    mtg.mode = decision.meetingMode || mtg.mode || 'office';
+    mtg.mode = p.remoteOnly ? 'video' : (decision.meetingMode || mtg.mode || 'office');
     const slots = meeting.nextSlots({
       count: 2,
       taken: meeting.takenSlots(storage.getAllConversations()),
@@ -1273,7 +1542,7 @@ async function handleFreeText(phone, session, text, opts = {}) {
     mtg.status = slots.length ? 'slots_proposed' : 'offered';
     // The model never invents a time, an address or a map link: this turn is
     // scripted from the real availability.
-    decision.fallbackText = `מעולה. 🙂\n\n${meeting.slotPrompt(slots, mtg.mode)}`;
+    decision.fallbackText = `${p.lang === 'en' ? 'Great.' : 'מעולה.'} 🙂\n\n${meeting.slotPrompt(slots, mtg.mode, p.lang)}`;
     decision.forceFallback = true;
   }
   if (decision.meetingDeclined) {
@@ -1292,13 +1561,31 @@ async function handleFreeText(phone, session, text, opts = {}) {
       ' ענה על מה ששאל, בקצרה ובמלואו. אם הוא עוזב, השאר את מספר המשרד.';
   }
 
+  // "במה אתם מטפלים?" — 23 Oct: the model's answer was blocked by the route
+  // guardrail and the fallback was a passage about a grandfather who
+  // regained citizenship in 2010. A plain question gets a plain answer.
+  const SERVICE_Q = /במה\s+(?:אתה|אתם|את)\s+מטפל|מה\s+(?:אתם|אתה)\s+עוש|במה\s+מדובר|על\s+מה\s+(?:זה|המודעה)|מה\s+השירות|what\s+do\s+you\s+(?:do|offer)|what\s+is\s+this\s+about/i;
+  let serviceFallback = null;
+  if (SERVICE_Q.test(text)) {
+    decision.directiveSuffix = (decision.directiveSuffix || '') +
+      ' ⚠️ הלקוח שאל מה המשרד עושה. ענה בשני משפטים: אזרחות ודרכון רומני לישראלים, איתור מסמכים ברומניה ובישראל,' +
+      ' תרגום נוטריוני והגשה. בלי סעיפים ובלי הרצאה. אחר כך שאלה אחת על מה שחסר.';
+    const who = p.eligibility?.ancestor ? 'שבן משפחה שלך נולד ברומניה' : 'שיש לך שורשים ברומניה';
+    serviceFallback = p.lang === 'en'
+      ? `We're a law office that handles Romanian citizenship and passports for Israelis — tracing the documents ` +
+        `in Romania and Israel, notarised translation, and filing. 🙂\n\n*Where in Romania was your relative born?*`
+      : `אנחנו משרד עורכי דין שמטפל בהשבת אזרחות רומנית והוצאת דרכון רומני לישראלים — איתור המסמכים ברומניה ובישראל, ` +
+        `תרגום נוטריוני והגשה. 🙂 מכיוון ${who}, יש כנראה על מה לדבר.\n\n*באיזו עיר או אזור ברומניה נולדו?*`;
+  }
+
   // 5. Compose the reply — AI first, scripted fallback
   let replyText = null;
   if (aiWillCompose && !decision.forceFallback) {
     replyText = await brain.compose(analysis, p, session.history || [],
       (decision.directive || '') + (decision.directiveSuffix || ''));
   }
-  const aiComposed = !!replyText;
+  if (!replyText && serviceFallback) replyText = serviceFallback;
+  const aiComposed = !!replyText && replyText !== serviceFallback;
   // 84 words per bot message on average across the October trainer runs, and
   // "תשובות ארוכות מדי" in a third of the reports. The model is told 2-5 lines;
   // this makes it true. Whole sentences only, and a closing question survives.
@@ -1312,6 +1599,16 @@ async function handleFreeText(phone, session, text, opts = {}) {
     const stripped = closing.stripPhoneAsks(replyText);
     if (stripped) replyText = stripped;
   }
+  // We hold the number they are writing from. The model still asks "מה מספר
+  // הטלפון שלך?" by habit (עדינה, 24 Oct: "היית רואה שזה הנייד"). Replace the
+  // ask with the one-tap consent — or drop it, if we already have consent.
+  if (aiComposed && closing.asksForPhone(replyText)) {
+    const stripped = closing.stripPhoneAsks(replyText) || '';
+    replyText = (p.clientPhone || p.contactRefusals > 0 || (p.messageCount || 0) < 3)
+      ? (stripped || replyText)
+      : `${stripped}\n\n${closing.consentAsk(p)}`.trim();
+  }
+  if (aiComposed && p.lang === 'en') replyText = replyText.replace(/Podim/g, 'Pudim');
   if (!replyText) {
     // Actions with purpose-built copy (escalation, asking for contact details,
     // closing, objection playbooks) must keep it. Only informational turns
@@ -1591,7 +1888,7 @@ async function handleScriptedState(phone, session, text, analysis) {
       const req = p.meeting || {};
       if (req.status === 'requested' && req.slotLabel) {
         await reply(phone, session,
-          `🎉 *תודה, ${p.name}!*\n\nהבקשה לפגישה ב*${req.slotLabel}* אצלנו. ` +
+          `🎉 *תודה${p.name ? `, ${p.name}` : ''}!*\n\nהבקשה לפגישה ב*${req.slotLabel}* אצלנו. ` +
           `עו״ד פודים יאשר אותה, ותקבל הודעה כאן בוואטסאפ.\n\n` +
           `אם משהו משתנה — *${closing.OFFICE_PHONE}*.`);
         await maybeSaveLead(phone, session);
@@ -1600,8 +1897,8 @@ async function handleScriptedState(phone, session, text, analysis) {
 
       const isCourse = p.interest?.includes('b1_course');
       await reply(phone, session, isCourse
-        ? `🎉 *תודה, ${p.name}!*\n\nקיבלנו את הפרטים שלך לגבי *קורס הרומנית B1*.\n\n${timeAsk}`
-        : `🎉 *מצוין, ${p.name}!*\n\nקיבלנו את הפרטים.\n\n${faq.get('consultation')}\n\n${timeAsk}`
+        ? `🎉 *תודה${p.name ? `, ${p.name}` : ''}!*\n\nקיבלנו את הפרטים שלך לגבי *קורס הרומנית B1*.\n\n${timeAsk}`
+        : `🎉 *מצוין${p.name ? `, ${p.name}` : ''}!*\n\nקיבלנו את הפרטים.\n\n${faq.get('consultation')}\n\n${timeAsk}`
       );
 
       await maybeSaveLead(phone, session);
@@ -1655,8 +1952,10 @@ async function maybeSaveLead(phone, session) {
   const e = p.eligibility || {};
   storage.saveLead({
     waPhone: phone,
-    name: p.name,
+    name: p.name || p.waName || null,
     clientPhone: p.clientPhone,
+    callbackConsent: !!p.callbackConsent,
+    requestedTiming: p.requestedTiming || null,
     // `source` is WHERE the lead came from; `interest` is WHAT they want.
     // These used to be collapsed into one field, which discarded attribution.
     source: p.source || 'unknown',
@@ -1968,10 +2267,16 @@ function askOf(text) {
  * paragraph and rejected it gets one short honest line instead.
  */
 const SECOND_TIME = [
-  p => `לא אחזור על מה שכבר כתבתי. 🙂 בקצרה: את המספר נותן רק עו״ד פודים, אחרי שהוא רואה מה יש בתיק.\n\n` +
-       `אם לא נוח לך לדבר — *שלח כאן צילום של המסמכים שיש לך*, והוא יעבור עליהם ויגיד לך כאן מה יש ומה חסר.`,
-  p => `אני מבין שזו לא התשובה שרצית, ואני לא רוצה להתיש אותך באותו הסבר. 🙏\n\n` +
-       `שתי דרכים בלי שיחה: לשלוח כאן צילומי מסמכים לעו״ד פודים, או להתקשר כשנוח לך — *${closing.OFFICE_PHONE}* · ${closing.HOURS}.`,
+  // 17 and 25 Oct: the old first line — "את המספר נותן רק עו״ד פודים" — is a
+  // price answer, and it went out in reply to "כן" and "אשלח מסמכים". These
+  // are neutral: they fit whatever the repeated template was about.
+  p => p.clientPhone
+    ? `רשמתי. 🙂 אם יש עוד משהו שחשוב שעו״ד פודים ידע לפני השיחה — אפשר לכתוב כאן.`
+    : `לא אחזור על אותה שאלה. 🙂 אם נוח — אפשר לשלוח כאן צילומי מסמכים לעו״ד פודים, ` +
+      `או להתקשר כשנוח: *${closing.OFFICE_PHONE}* · ${closing.HOURS}.`,
+  p => p.clientPhone
+    ? `קיבלתי, תודה. 🙏 זה יועבר לעו״ד פודים.`
+    : `בסדר גמור. 🙂 כשנוח — *${closing.OFFICE_PHONE}* · ${closing.HOURS}, או לכתוב כאן.`,
   p => closing.callClose(p, { variant: 'departing_brief' }),
 ];
 

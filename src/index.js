@@ -9,6 +9,68 @@ const storage = require('./storage');
 const wa = require('./whatsapp');
 const brain = require('./ai/brain');
 const { handleMessage } = require('./flows');
+
+/**
+ * Messages from one person are handled one at a time, and text that arrives
+ * in a quick burst is answered once.
+ *
+ * Oct: people write in pieces — "קישניוב" then "1935", "תודה" then "ערב טוב",
+ * "👍" twice — and each piece got its own reply, often two near-identical ones
+ * a second apart, sometimes answering the first half after the second.
+ * A short window (default 3.5s) collects the burst into one message.
+ */
+const inbound = (() => {
+  const WINDOW_MS = Number(process.env.INBOUND_COALESCE_MS || 3500);
+  const pending = new Map();   // phone → { message, texts[], timer }
+  const chains = new Map();    // phone → Promise (serialises processing)
+
+  function run(phone, message) {
+    const prev = chains.get(phone) || Promise.resolve();
+    const next = prev.then(() => handleMessage(phone, message)).catch(async err => {
+      console.error(`❌ Flow error for ${phone}:`, err);
+      // Never leave a customer hanging because of our bug
+      await wa.sendText(phone,
+        'סליחה, נתקלתי בתקלה רגעית. 🙏\nאפשר לנסות שוב, או לכתוב *נציג* ואעביר אותך לעו״ד פודים.'
+      ).catch(() => {});
+    });
+    chains.set(phone, next);
+    next.finally(() => { if (chains.get(phone) === next) chains.delete(phone); });
+    return next;
+  }
+
+  function flush(phone) {
+    const p = pending.get(phone);
+    if (!p) return;
+    pending.delete(phone);
+    clearTimeout(p.timer);
+    const message = p.texts.length > 1
+      ? { ...p.message, text: { body: p.texts.join('\n') } }
+      : p.message;
+    if (p.texts.length > 1) console.log(`🧩 [${phone}] ${p.texts.length} messages answered as one`);
+    run(phone, message);
+  }
+
+  function enqueue(phone, message) {
+    if (message.type !== 'text' || WINDOW_MS <= 0) {
+      flush(phone);                 // anything buffered goes first, in order
+      return run(phone, message);
+    }
+    const body = message.text?.body || '';
+    const p = pending.get(phone);
+    if (p) {
+      p.texts.push(body);
+      clearTimeout(p.timer);
+      p.timer = setTimeout(() => flush(phone), WINDOW_MS);
+      return;
+    }
+    pending.set(phone, {
+      message, texts: [body],
+      timer: setTimeout(() => flush(phone), WINDOW_MS),
+    });
+  }
+
+  return { enqueue, flush };
+})();
 const handoff = require('./sales/handoff');
 const followup = require('./followup/scheduler');
 const dashboard = require('./admin/dashboard');
@@ -148,15 +210,11 @@ app.post('/webhook', async (req, res) => {
           console.log(`\n📨 New message from ${phone} [${message.type}]`);
           wa.markRead(msgId).catch(() => {});
 
-          try {
-            await handleMessage(phone, message);
-          } catch (err) {
-            console.error(`❌ Flow error for ${phone}:`, err);
-            // Never leave a customer hanging because of our bug
-            await wa.sendText(phone,
-              'סליחה, נתקלתי בתקלה רגעית. 🙏\nאפשר לנסות שוב, או לכתוב *נציג* ואעביר אותך לעו״ד פודים.'
-            ).catch(() => {});
-          }
+          // The name on the sender's WhatsApp profile, for the office's call list.
+          const contact = (value.contacts || []).find(c => c.wa_id === phone) || value.contacts?.[0];
+          if (contact?.profile?.name) message._waName = contact.profile.name;
+
+          await inbound.enqueue(phone, message);
         }
       }
     }

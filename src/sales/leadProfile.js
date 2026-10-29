@@ -367,7 +367,11 @@ function isQualified(profile) {
 }
 
 function hasContactDetails(profile) {
-  return !!(profile.name && profile.clientPhone);
+  // A number in the file is a number the lead gave us — typed, or a yes to
+  // "may he call you on this number?". Either way the office can call and ask
+  // the name itself. (Oct: 14 of 35 leads were lost waiting for a "full name"
+  // and a number we already had.)
+  return !!profile.clientPhone;
 }
 
 /**

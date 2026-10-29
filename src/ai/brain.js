@@ -872,8 +872,8 @@ function enforceGuardrails(text, profile = null) {
   // "עו״ד פודים עצמו יחזור אליך" to a lead who gave no number (יוסי, 16 Oct).
   if (profile && !profile.clientPhone &&
       /(?:עו״ד|עו"ד|עורך\s+הדין)\s+(?:יהונתן\s+)?פודים\s+(?:עצמו\s+)?(?:יחזור|יתקשר|ייצור\s+קשר|יחייג)\s+אלי/.test(text) &&
-      !/(?:מספר|טלפון|נייד)\s*(?:שלך|לחזרה)|לאיזה\s+מספר|מה\s+(?:ה)?מספר|כאן\s+בוואטסאפ|בוואטסאפ|בצ׳אט|כאן/.test(text)) {
-    return block('🛑 Guardrail: promised a callback but the lead gave no number — ask for one, or give the office phone');
+      !/(?:מספר|טלפון|נייד)\s*(?:שלך|לחזרה)|לאיזה\s+מספר|מה\s+(?:ה)?מספר|למספר\s+הזה|כאן\s+בוואטסאפ|בוואטסאפ|בצ׳אט|כאן/.test(text)) {
+    return block('🛑 Guardrail: promised a callback but the lead has not agreed to one — ask "אפשר שעו״ד פודים יתקשר למספר הזה?" (never ask them to type a number), or give the office phone');
   }
   if (FEE_SCOPE_CLAIM.some(re => re.test(text))) {
     return block('🛑 Guardrail: claimed what the fee covers or whether it is per person — only the lawyer says that');
